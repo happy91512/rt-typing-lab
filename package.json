@@ -1,0 +1,23 @@
+{
+  "name": "rt-typing-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "tsc --noEmit",
+    "test": "node --test src/*.test.ts",
+    "test:e2e": "playwright test"
+  },
+  "engines": { "node": ">=24" },
+  "dependencies": { "zod": "4.6.7" },
+  "devDependencies": {
+    "@playwright/test": "1.65.1",
+    "@types/node": "^24.0.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.8"
+  }
+}
