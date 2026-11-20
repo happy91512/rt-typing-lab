@@ -2,9 +2,11 @@ import './style.css';
 import { bopomofoLabels, getBaselinePrompts, keyboardRows, typeableCodes } from './prompts.ts';
 import { mountRound } from './round.ts';
 import { mountTravel } from './travel-panel.ts';
+import { formatSettingList, settingList, settingText, validationText } from './setting-list.ts';
+import type { SettingList } from './setting-list.ts';
 import {
   baselineKeyCounts, cancelSupplement, comparisonPrompt, completePairs, configSchema, countRtErrors, defaultConfig, finishSupplement,
-  lowSampleKeys, mergedRecommendations, minimumBaselineSamples, mm, newStudy, onGrid, passesTextGuard,
+  lowSampleKeys, mergedRecommendations, minimumBaselineSamples, mm, newStudy, onGrid,
   pendingSupplement, proposeTargets, recordTravelTarget, refinementForKey, restoreStudy, settingFor, startSupplement,
   storageKey, summarizeText, trialResults, validationPrompt,
 } from './study.ts';
@@ -508,6 +510,7 @@ function renderResults(stage: HTMLElement) {
   if (!study) return;
   const results = mergedRecommendations(study);
   const wins = Object.values(results).flatMap(result => result.status === 'recommended' && result.target ? [result.target] : []);
+  const plan = settingList(study, results);
   const holdout = validationPrompt(study);
   if (validating && holdout && wins.length) {
     mountComparisonRound(stage, holdout, wins, 'holdout', result => {
@@ -527,7 +530,6 @@ function renderResults(stage: HTMLElement) {
   const english = summarizeText(baseline, 'english');
   const chinese = summarizeText(baseline, 'chinese');
   const validated = validation.length === 4;
-  const validationOK = validated && passesTextGuard(validation.slice(0, 2), validation.slice(2));
   const tested = new Set(study.trials.flatMap(trial => trial.targets.map(target => target.code)));
   stage.innerHTML = `<div class="result-hero">
     <div><strong>${wins.length}</strong><span>鍵有實測推薦</span></div>
@@ -539,10 +541,12 @@ function renderResults(stage: HTMLElement) {
     <div class="legend"><span class="legend-win">實測推薦</span><span class="legend-pending">待驗證</span><span>其他狀態請參考逐鍵表</span></div><div id="key-detail"></div>
   </section>
   ${completed.length ? textComparison(completed) : ''}
+  ${plan && !comparisonInProgress && !supplement ? settingListSection(plan, config) : ''}
   <section class="panel result-panel"><div class="section-head"><h2>逐鍵設定表</h2><button data-export>下載 CSV</button></div>
     <p class="muted">A／B 欄顯示可歸因的 RT 錯誤數與按鍵機會。連打漏字樣本可在鍵位詳情查看。</p>
     <p class="muted" data-baseline-coverage>已達基準樣本門檻 ${typeableCodes.length - missing.length}／${typeableCodes.length} 鍵。</p>
-    ${validated ? `<p role="status">${validationOK ? '整組已通過新文本複測。' : '整組需複測。合併後的表現未通過中英文門檻。'}</p>` : ''}
+    ${validated && plan ? `<p role="status">${plan.validation === 'passed'
+      ? '整組已通過新文本複測。' : '整組需複測。合併後的表現未通過中英文門檻。'}</p>` : ''}
     <div class="table-scroll result-table" tabindex="0" aria-label="逐鍵設定表，可捲動"><table>
       <thead><tr><th>鍵</th><th>原設定</th><th>建議</th><th>基準樣本</th><th>A 錯誤 / 樣本</th><th>B 錯誤 / 樣本</th><th>狀態</th></tr></thead>
       <tbody>${keyboardRows.flat().map(({ code }) => {
@@ -564,6 +568,11 @@ function renderResults(stage: HTMLElement) {
   bindKeys(stage, () => showKeyDetail(stage, results, counts));
   showKeyDetail(stage, results, counts);
   stage.querySelector('[data-export]')?.addEventListener('click', () => exportCsv(study!, results));
+  stage.querySelector('[data-export-settings]')?.addEventListener('click', () => {
+    if (!plan) return;
+    downloadFile('rt-typing-lab-settings.txt', 'text/plain;charset=utf-8',
+      formatSettingList(plan, fieldLabels[config.field], keyLabel, config.standard));
+  });
   stage.querySelector('[data-continue]')?.addEventListener('click', () => useView(study!.baseline.length < 5 || supplement ? 'baseline' : 'comparison'));
   stage.querySelector('[data-supplement]')?.addEventListener('click', () => beginSupplement());
   stage.querySelector('[data-validate]')?.addEventListener('click', () => {
@@ -573,6 +582,20 @@ function renderResults(stage: HTMLElement) {
     app.querySelector<HTMLElement>('[data-confirm]')?.focus();
   });
   stage.querySelector('[data-clear]')?.addEventListener('click', clearDialog);
+}
+
+function settingListSection(list: SettingList, config: Config) {
+  const slot = list.slotB === 'same' ? `使用原槽 ${list.slotA}` : `以 A 槽為基準建立 B 槽 ${list.slotB}`;
+  return `<section class="panel result-panel"><div class="section-head"><h2>官方驅動套用清單</h2>
+    <button type="button" data-export-settings>下載設定清單</button></div>
+    <p class="muted">${validationText(list.validation)}。調整 ${fieldLabels[config.field]}，${slot}。</p>
+    <details><summary>查看套用值與還原值</summary>
+      <div class="table-scroll"><table><thead><tr><th scope="col">鍵</th><th scope="col">A 原設定</th><th scope="col">B 套用值</th><th scope="col">依據</th></tr></thead>
+        <tbody>${list.rows.map(row => `<tr><th scope="row">${html(keyLabel(row.code))}</th><td>${settingText(row.original)}</td>
+          <td>${settingText(row.candidate)}</td><td>${row.recommended ? '逐鍵實測推薦' : '沿用 A 原設定'}</td></tr>`).join('')}</tbody>
+      </table></div>
+    </details>
+  </section>`;
 }
 
 function textComparison(completed: ReturnType<typeof completePairs>) {
@@ -639,10 +662,14 @@ function exportCsv(study: Study, results: Record<string, Recommendation>) {
       result?.b.opportunities ? String(countRtErrors(result.b, result.target?.source)) : '', String(result?.b.opportunities ?? ''), result?.reason ?? '']);
   }
   const csv = fields.map(row => row.map(value => `"${value.replaceAll('"', '""')}"`).join(',')).join('\r\n');
-  const url = URL.createObjectURL(new Blob(['\uFEFF', csv], { type: 'text/csv;charset=UTF-8' }));
+  downloadFile('rt-typing-lab-results.csv', 'text/csv;charset=UTF-8', csv);
+}
+
+function downloadFile(name: string, type: string, content: string) {
+  const url = URL.createObjectURL(new Blob(['\uFEFF', content], { type }));
   const link = document.createElement('a');
   link.href = url;
-  link.download = 'rt-typing-lab-results.csv';
+  link.download = name;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 500);
 }

@@ -164,6 +164,17 @@ test('complete a baseline and A/B pairs, verify the recommendation on new text, 
     }
   }
   await expect(page.getByRole('status').filter({ hasText: '整組已通過新文本複測。' })).toBeVisible();
+  const settings = page.getByRole('heading', { name: '官方驅動套用清單' }).locator('..').locator('..');
+  await settings.getByText('查看套用值與還原值').click();
+  await expect(settings.getByRole('rowheader', { name: 'F', exact: true }).locator('..')).toContainText('0.20 mm');
+  const pendingSettings = page.waitForEvent('download');
+  await settings.getByRole('button', { name: '下載設定清單' }).click();
+  const settingsDownload = await pendingSettings;
+  expect(settingsDownload.suggestedFilename()).toBe('rt-typing-lab-settings.txt');
+  const settingsText = await readFile((await settingsDownload.path())!, 'utf8');
+  expect(settingsText).toContain('整組已通過新文本複測');
+  expect(settingsText).toContain('F\t0.15 mm\t0.20 mm\t逐鍵實測推薦');
+  await settings.getByText('查看套用值與還原值').click();
 
   const { study, raw } = await savedStudy(page);
   expect(study.baseline.map(({ kind }) => kind)).toEqual(['english', 'english', 'chinese', 'chinese', 'drill']);
