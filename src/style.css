@@ -82,6 +82,7 @@ label { display: grid; gap: .27rem; font-weight: 640; font-size: .93rem; }
 .form-note { color: #8f3035; font-size: .88rem; }
 .form-note:empty { display: none; }
 #setup-form > button { margin-top: .9rem; width: 100%; }
+.import-row { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: .25rem; margin-top: .6rem; font-size: .9rem; }
 .advanced { border-top: 1px solid var(--line); padding-top: .55rem; }
 .advanced > div { margin-top: .7rem; }
 summary { cursor: pointer; color: var(--blue); font-weight: 650; }
