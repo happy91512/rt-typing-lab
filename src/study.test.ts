@@ -4,7 +4,7 @@ import { getBaselinePrompts } from './prompts.ts';
 import type { Prompt } from './prompts.ts';
 import type { KeyCounts } from './scoring.ts';
 import {
-  baselineKeyCounts, cancelSupplement, comparisonPrompt, completePairs, defaultConfig, finishSupplement, latestPairToRepeat,
+  baselineKeyCounts, cancelSupplement, comparisonPrompt, completePairs, defaultConfig, exportBackup, finishSupplement, importBackup, latestPairToRepeat,
   mergedRecommendations, newStudy, passesTextGuard, pendingSupplement, proposeTargets, recordTravelTarget,
   refinementForKey, repeatLatestPair, restoreStudy,
   startSupplement, trialResults, validationPrompt,
@@ -197,6 +197,20 @@ function makeStoredStudy(): Study {
 test('restores a study with generated prompt IDs at every stage', () => {
   const study = makeStoredStudy();
   assert.deepEqual(restoreStudy(JSON.stringify(study)), study);
+});
+
+test('round-trips a progress backup and rejects other files', () => {
+  const study = makeStoredStudy();
+  const text = exportBackup(study, new Date('2026-11-20T00:00:00Z'));
+  assert.equal(JSON.parse(text).savedAt, '2026-11-20T00:00:00.000Z');
+  assert.deepEqual(importBackup(text), study);
+  assert.deepEqual(importBackup(`﻿${text}`), study);
+  assert.equal(importBackup(JSON.stringify(study)), null, 'accepted a bare localStorage record');
+  assert.equal(importBackup(text.replace('"version": 1', '"version": 2')), null);
+  assert.equal(importBackup('"實體鍵","欄位"'), null);
+  const broken = structuredClone(study);
+  broken.baseline[0].promptId = 'unknown';
+  assert.equal(importBackup(exportBackup(broken)), null);
 });
 
 test('restarts only the most recent pair and invalidates the combined holdout', () => {

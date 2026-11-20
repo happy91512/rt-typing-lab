@@ -107,6 +107,22 @@ export function restoreStudy(raw: string): Study | null {
   }
 }
 
+export const backupFormat = 'rt-typing-lab-backup';
+
+export function exportBackup(study: Study, savedAt = new Date()): string {
+  return JSON.stringify({ format: backupFormat, version: 1, savedAt: savedAt.toISOString(), study }, null, 2);
+}
+
+export function importBackup(text: string): Study | null {
+  try {
+    const data: unknown = JSON.parse(text.replace(/^﻿/, ''));
+    const wrapper = z.object({ format: z.literal(backupFormat), version: z.literal(1), study: z.unknown() }).safeParse(data);
+    return wrapper.success ? restoreStudy(JSON.stringify(wrapper.data.study)) : null;
+  } catch {
+    return null;
+  }
+}
+
 function matchesPrompt(round: Round, prompt: Prompt | undefined): boolean {
   return round.promptId === prompt?.id && round.kind === prompt.kind;
 }

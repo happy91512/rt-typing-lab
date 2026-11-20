@@ -231,5 +231,32 @@ test('complete a baseline and A/B pairs, verify the recommendation on new text, 
   expect(restarted.validation).toEqual([]);
   await page.reload();
   await expect(page.getByRole('button', { name: '已套用 A 組' })).toBeVisible();
+
+  await page.getByRole('navigation', { name: '測試步驟' }).getByRole('button', { name: /逐鍵結果/ }).click();
+  const pendingProgress = page.waitForEvent('download');
+  await page.getByRole('button', { name: '下載進度檔' }).click();
+  const progress = await pendingProgress;
+  expect(progress.suggestedFilename()).toBe('rt-typing-lab-progress.json');
+  const progressPath = await progress.path();
+  if (!progressPath) throw new Error('Progress file did not download');
+  const progressText = await readFile(progressPath, 'utf8');
+  for (const text of [unfinishedText, supplement, ...passages, ...holdoutPrompts]) expect(progressText).not.toContain(text);
+
+  await page.getByRole('button', { name: '清除本機資料' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: '清除本機資料' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: '找到適合你的逐鍵 RT' })).toBeVisible();
+  const importButton = page.getByRole('button', { name: '匯入進度檔' });
+  const invalidChooser = page.waitForEvent('filechooser');
+  await importButton.click();
+  await (await invalidChooser).setFiles({ name: 'results.csv', mimeType: 'text/csv', buffer: Buffer.from('"實體鍵","欄位"') });
+  await expect(page.getByText('這個檔案不是可用的進度檔')).toBeVisible();
+  expect(await page.evaluate(key => localStorage.getItem(key), storageKey)).toBeNull();
+
+  const chooser = page.waitForEvent('filechooser');
+  await importButton.click();
+  await (await chooser).setFiles(progressPath);
+  await expect(page.getByRole('status').filter({ hasText: '已匯入進度檔' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '第 3 對 / 3' })).toBeVisible();
+  expect((await savedStudy(page)).study).toEqual(restarted);
   expect(externalRequests).toEqual([]);
 });

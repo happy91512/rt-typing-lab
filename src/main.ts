@@ -5,7 +5,7 @@ import { mountTravel } from './travel-panel.ts';
 import { formatSettingList, settingList, settingText, validationText } from './setting-list.ts';
 import type { SettingList } from './setting-list.ts';
 import {
-  baselineKeyCounts, cancelSupplement, comparisonPrompt, completePairs, configSchema, countRtErrors, defaultConfig, finishSupplement,
+  baselineKeyCounts, cancelSupplement, comparisonPrompt, completePairs, configSchema, countRtErrors, defaultConfig, exportBackup, finishSupplement, importBackup,
   latestPairToRepeat, lowSampleKeys, mergedRecommendations, minimumBaselineSamples, mm, newStudy, onGrid,
   pendingSupplement, proposeTargets, recordTravelTarget, refinementForKey, repeatLatestPair, restoreStudy, settingFor, startSupplement,
   storageKey, summarizeText, trialResults, validationPrompt,
@@ -26,16 +26,50 @@ type View = keyof typeof steps;
 
 let storageNote = '';
 let study = loadStudy();
-let view: View = !study ? 'setup' : study.baseline.length < 5 || pendingSupplement(study) ? 'baseline'
-  : study.trials.at(-1)?.rounds.length === 18 ? 'results' : 'comparison';
+let view = resumeView(study);
 let draft = study?.config ?? defaultConfig;
 let overrides = { ...draft.overrides };
 let selection: Target[] | null = null;
 let selectedKey = 'KeyF';
 let confirmedBlock = '';
-let validating = !!study?.validation.length && study.validation.length < 4;
+let validating = resumesValidation(study);
 let roundScope: AbortController | undefined;
 let closeTravel: (() => void) | undefined;
+
+function resumeView(current: Study | null): View {
+  return !current ? 'setup' : current.baseline.length < 5 || pendingSupplement(current) ? 'baseline'
+    : current.trials.at(-1)?.rounds.length === 18 ? 'results' : 'comparison';
+}
+
+function resumesValidation(current: Study | null) {
+  return !!current?.validation.length && current.validation.length < 4;
+}
+
+function exportProgress() {
+  if (!study) return;
+  downloadFile('rt-typing-lab-progress.json', 'application/json', exportBackup(study), false);
+}
+
+async function importProgress(file: File | undefined, status: Element | null) {
+  if (!file) return;
+  const restored = file.size <= 2_000_000 ? importBackup(await file.text()) : null;
+  if (!restored) {
+    if (status) status.textContent = '這個檔案不是可用的進度檔。請選擇本網站下載的 rt-typing-lab-progress.json。';
+    return;
+  }
+  study = restored;
+  draft = restored.config;
+  overrides = { ...draft.overrides };
+  selection = null;
+  confirmedBlock = '';
+  validating = resumesValidation(restored);
+  storageNote = '';
+  save();
+  const saved = !storageNote;
+  if (saved) storageNote = '已匯入進度檔，可以從上次的步驟繼續。';
+  useView(resumeView(restored));
+  if (saved) storageNote = '';
+}
 
 function loadStudy() {
   try {
@@ -54,7 +88,7 @@ function save() {
     if (study) localStorage.setItem(storageKey, JSON.stringify(study));
     else localStorage.removeItem(storageKey);
   } catch {
-    storageNote = '本機進度未能儲存。請保留此分頁，或先下載結果。';
+    storageNote = '本機進度未能儲存。請保留此分頁，或先下載進度檔。';
   }
 }
 
@@ -157,10 +191,11 @@ function renderSetup(stage: HTMLElement) {
       <dl class="summary-list"><div><dt>RT 欄位</dt><dd>${fieldLabels[study.config.field]}</dd></div>
       <div><dt>全鍵預設</dt><dd>${settingLabel(study.config.standard)}</dd></div>
       <div><dt>個別例外</dt><dd>${Object.keys(study.config.overrides).length} 鍵</dd></div></dl>
-      <p class="muted">要改用其他鍵盤設定，請先下載目前結果，再清除本機資料開始新一輪。</p>
-      <div class="actions"><button class="primary" data-continue>回到測試</button><button data-clear>清除本機資料</button></div></section>
+      <p class="muted">要換瀏覽器或電腦繼續，請下載進度檔，再到新瀏覽器匯入。要改用其他鍵盤設定，請先下載進度檔，再清除本機資料開始新一輪。</p>
+      <div class="actions"><button class="primary" data-continue>回到測試</button><button data-export-progress>下載進度檔</button><button data-clear>清除本機資料</button></div></section>
       <section class="panel keyboard-panel"><h2>實體鍵位</h2>${keyboard(false)}</section></div>`;
     stage.querySelector('[data-continue]')?.addEventListener('click', () => useView(study!.baseline.length < 5 ? 'baseline' : 'comparison'));
+    stage.querySelector('[data-export-progress]')?.addEventListener('click', exportProgress);
     stage.querySelector('[data-clear]')?.addEventListener('click', clearDialog);
     return;
   }
@@ -181,6 +216,10 @@ function renderSetup(stage: HTMLElement) {
     </div>
     <p class="form-note" id="config-error" role="status"></p>
     <button class="primary" type="submit">開始基準測試</button>
+    <div class="import-row"><span class="muted">已在其他瀏覽器測過？</span>
+      <button type="button" class="text-button" data-import-progress>匯入進度檔</button>
+      <input type="file" accept=".json,application/json" data-import-file hidden aria-label="選擇進度檔"></div>
+    <p class="form-note" id="import-error" role="status"></p>
   </form>
   <section class="panel keyboard-panel" aria-labelledby="layout-title">
     <h2 id="layout-title">實體鍵位</h2><p class="muted">如果有單獨改過的鍵，在這裡加上例外。一般鍵沿用全鍵預設。</p>
@@ -192,6 +231,12 @@ function renderSetup(stage: HTMLElement) {
   if (slotB instanceof HTMLSelectElement) slotB.value = draft.slotB;
   bindKeys(stage, () => updateOverride(stage));
   updateOverride(stage);
+  const importFile = form.querySelector<HTMLInputElement>('[data-import-file]')!;
+  form.querySelector('[data-import-progress]')?.addEventListener('click', () => importFile.click());
+  importFile.addEventListener('change', () => {
+    void importProgress(importFile.files?.[0], form.querySelector('#import-error'));
+    importFile.value = '';
+  });
   form.addEventListener('submit', event => {
     event.preventDefault();
     const data = new FormData(form);
@@ -590,6 +635,7 @@ function renderResults(stage: HTMLElement) {
       ${study.baseline.length === 5 && missing.length && !supplement && !comparisonInProgress ? '<button data-supplement>補測低樣本鍵</button>' : ''}
       ${wins.length && !validated && !comparisonInProgress && !supplement ? '<button data-validate>用新文本複測整組</button>' : ''}
       ${repeat ? `<button class="text-button" data-repeat-pair>重測第 ${repeat.pair + 1} 對</button>` : ''}
+      <button class="text-button" data-export-progress>下載進度檔</button>
       <button class="text-button" data-clear>清除本機資料</button></div>
     ${tested.size ? `<details class="advanced restore-list"><summary>還原測試前的設定</summary>
       <p class="muted">回到官方驅動的板載設定 ${config.slotA}，依下表核對 ${fieldLabels[config.field]}。若使用不同槽位且原槽未改動，切回原槽即可。</p>
@@ -612,6 +658,7 @@ function renderResults(stage: HTMLElement) {
     render();
     app.querySelector<HTMLElement>('[data-confirm]')?.focus();
   });
+  stage.querySelector('[data-export-progress]')?.addEventListener('click', exportProgress);
   stage.querySelector('[data-clear]')?.addEventListener('click', clearDialog);
   stage.querySelector('[data-repeat-pair]')?.addEventListener('click', repeatPairDialog);
 }
@@ -697,8 +744,8 @@ function exportCsv(study: Study, results: Record<string, Recommendation>) {
   downloadFile('rt-typing-lab-results.csv', 'text/csv;charset=UTF-8', csv);
 }
 
-function downloadFile(name: string, type: string, content: string) {
-  const url = URL.createObjectURL(new Blob(['\uFEFF', content], { type }));
+function downloadFile(name: string, type: string, content: string, byteOrderMark = true) {
+  const url = URL.createObjectURL(new Blob(byteOrderMark ? ['\uFEFF', content] : [content], { type }));
   const link = document.createElement('a');
   link.href = url;
   link.download = name;
