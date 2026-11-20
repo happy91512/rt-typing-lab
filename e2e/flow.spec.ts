@@ -52,7 +52,12 @@ async function savedStudy(page: Page) {
   return { raw, study };
 }
 
-test('complete a baseline and A/B pairs, verify the recommendation on new text, and export aggregates', async ({ page }) => {
+test('complete a baseline and A/B pairs, verify the recommendation on new text, and export aggregates', async ({ page, baseURL }) => {
+  const externalRequests: string[] = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.origin !== baseURL || request.method() !== 'GET') externalRequests.push(request.url());
+  });
   await page.clock.install();
   await page.goto('/');
   await expect(page.getByRole('heading', { level: 1, name: '找到適合你的逐鍵 RT' })).toBeVisible();
@@ -177,4 +182,5 @@ test('complete a baseline and A/B pairs, verify the recommendation on new text, 
   expect(rows[0]).toContain('"實體鍵","欄位","原設定"');
   expect(rows.find(row => row.startsWith('"KeyF",'))).toContain('"0.15 mm","0.20","實測推薦"');
   for (const text of [...passages, ...holdoutPrompts]) expect(csv).not.toContain(text);
+  expect(externalRequests).toEqual([]);
 });

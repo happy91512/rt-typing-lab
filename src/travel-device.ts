@@ -1,4 +1,5 @@
 import { parseHero84TravelReport } from "./travel.ts";
+import { hero84TravelPositions } from "./travel-positions.ts";
 
 const REPORT_ID = 9;
 const REPORT_BYTES = 63;
@@ -7,10 +8,7 @@ const MODEL_COMMAND = 0x82;
 const TRAVEL_COMMAND = 0x98;
 const POLL_MS = 100;
 const TIMEOUT_MS = 600;
-const POSITIONS = new Map([
-  ["KeyQ", 29], ["KeyW", 30], ["KeyA", 43], ["KeyS", 44],
-  ["KeyZ", 56], ["KeyX", 57], ["Space", 70],
-]);
+const NO_READING_TIMEOUT_MS = 8000;
 
 interface HidDevice extends EventTarget {
   readonly opened: boolean;
@@ -125,7 +123,7 @@ class Hero84TravelDevice implements TravelDevice {
   }
 
   async measure(code: string, onSample: (sample: TravelReading) => void, onError?: (error: Error) => void) {
-    const position = POSITIONS.get(code);
+    const position = hero84TravelPositions.get(code);
     if (position === undefined) throw new Error("這個鍵位尚未支援鍵程量測。");
     if (this.closing || !this.device.opened) throw new Error("鍵盤連線已關閉。");
     if (this.session) throw new Error("請先停止目前的鍵程量測。");
@@ -181,7 +179,7 @@ class Hero84TravelDevice implements TravelDevice {
       lastReading = performance.now();
       const poll = () => {
         if (listeners.signal.aborted) return;
-        if (performance.now() - lastReading > TIMEOUT_MS * 2) {
+        if (performance.now() - lastReading > NO_READING_TIMEOUT_MS) {
           fail(new Error("未收到所選鍵位的鍵程回報。"));
           return;
         }

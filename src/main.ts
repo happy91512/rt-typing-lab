@@ -3,7 +3,7 @@ import { bopomofoLabels, getBaselinePrompts, keyboardRows, typeableCodes } from 
 import { mountRound } from './round.ts';
 import { mountTravel } from './travel-panel.ts';
 import {
-  comparisonPrompt, configSchema, countRtErrors, defaultConfig, mergedRecommendations,
+  comparisonPrompt, completePairs, configSchema, countRtErrors, defaultConfig, mergedRecommendations,
   mm, newStudy, onGrid, passesTextGuard, proposeTargets, restoreStudy, settingFor,
   storageKey, summarizeText, totalKeys, validationPrompt,
 } from './study.ts';
@@ -281,7 +281,15 @@ function renderBaseline(stage: HTMLElement) {
     completeRound();
   });
   const travel = stage.querySelector<HTMLElement>('#travel-mount');
-  if (travel) closeTravel = mountTravel(travel);
+  if (travel) {
+    const priorities = Object.entries(totalKeys(baseline))
+      .map(([code, counts]) => ({ code, errors: countRtErrors(counts) }))
+      .filter(item => item.errors > 0)
+      .sort((a, b) => b.errors - a.errors)
+      .slice(0, 6)
+      .map(item => item.code);
+    closeTravel = mountTravel(travel, priorities);
+  }
   stage.querySelector('[data-start]')?.addEventListener('click', () => {
     const details = stage.querySelector<HTMLDetailsElement>('.travel-panel');
     if (details) details.open = false;
@@ -396,6 +404,8 @@ function mountComparisonRound(
   const confirmed = confirmedBlock === token;
   const heading = current.pair === undefined ? '整組複測' : `第 ${current.pair + 1} 對 / 3`;
   const previousKeys = new Set(study!.trials.flatMap(trial => trial.targets.map(target => target.code)));
+  const separateSlot = config.slotB !== 'same' && setting === 'B';
+  if (separateSlot) for (const code of Object.keys(config.overrides)) previousKeys.add(code);
   stage.innerHTML = `<div class="split test-layout"><section class="panel">
     <div class="section-head"><h2>${heading}</h2><span class="condition condition-${setting}">${setting} 組</span></div>
     <div id="round">${confirmed ? '' : `<h3>套用 ${setting} 組設定</h3>
@@ -403,6 +413,7 @@ function mountComparisonRound(
       <div class="actions"><button class="primary" data-confirm>已套用 ${setting} 組</button><a class="button-link" href="${driver}" target="_blank" rel="noopener noreferrer">開啟官方驅動 ↗</a></div>`}</div>
     </section><aside class="panel detail-panel"><h2>${setting} 組設定清單</h2>
       <p class="muted">板載設定 ${slot} ／ ${fieldLabels[config.field]}</p>
+      ${separateSlot ? `<p class="muted">先以 A 槽為基準建立 B 槽。未列出的鍵沿用全鍵預設 ${settingLabel(config.standard)}。</p>` : ''}
       ${settingsTable(config, targets, setting, previousKeys)}
       <p class="muted">確認首次觸發、死區、軸體與本次未測的欄位相同。清單會提醒你還原先前試過的鍵。</p>
     </aside></div>`;
@@ -419,7 +430,7 @@ function settingsTable(config: Config, targets: readonly Target[], condition: Co
     condition === 'A' ? settingFor(config, target.code) : { enabled: true, distance: target.distance }]));
   for (const code of previouslyTested) if (!settings.has(code)) settings.set(code, settingFor(config, code));
   return `<div class="table-scroll"><table><thead><tr><th scope="col">鍵</th><th scope="col">RT 設定</th></tr></thead><tbody>${Array.from(settings, ([code, setting]) =>
-    `<tr><th scope="row">${html(keyLabel(code))}</th><td>${settingLabel(setting)}</td></tr>`
+    `<tr><th scope="row">${html(keyLabel(code))}</th><td>${setting.enabled ? `開啟，${settingLabel(setting)}` : '關閉'}</td></tr>`
   ).join('')}</tbody></table></div>`;
 }
 
@@ -465,6 +476,8 @@ function renderResults(stage: HTMLElement) {
   const { config, baseline, validation } = study;
   const counts = totalKeys(baseline);
   const comparisonInProgress = (study.trials.at(-1)?.rounds.length ?? 18) < 18;
+  const latestTrial = study.trials.at(-1);
+  const completed = latestTrial ? completePairs(latestTrial) : [];
   const english = summarizeText(baseline, 'english');
   const chinese = summarizeText(baseline, 'chinese');
   const validated = validation.length === 4;
@@ -479,6 +492,7 @@ function renderResults(stage: HTMLElement) {
     ${keyboard(true, results)}
     <div class="legend"><span class="legend-win">實測推薦</span><span class="legend-pending">待驗證</span><span>其他狀態請參考逐鍵表</span></div><div id="key-detail"></div>
   </section>
+  ${completed.length ? textComparison(completed) : ''}
   <section class="panel result-panel"><div class="section-head"><h2>逐鍵設定表</h2><button data-export>下載 CSV</button></div>
     <p class="muted">A／B 欄顯示可歸因的 RT 錯誤數與按鍵機會。連打漏字樣本可在鍵位詳情查看。</p>
     ${validated ? `<p role="status">${validationOK ? '整組已通過新文本複測。' : '整組需複測。合併後的表現未通過中英文門檻。'}</p>` : ''}
@@ -510,6 +524,24 @@ function renderResults(stage: HTMLElement) {
     app.querySelector<HTMLElement>('[data-confirm]')?.focus();
   });
   stage.querySelector('[data-clear]')?.addEventListener('click', clearDialog);
+}
+
+function textComparison(completed: ReturnType<typeof completePairs>) {
+  const baseline = completed.flatMap(pair => pair.A);
+  const candidate = completed.flatMap(pair => pair.B);
+  const rows = (['english', 'chinese'] as const).map(language => {
+    const a = summarizeText(baseline, language);
+    const b = summarizeText(candidate, language);
+    const unit = language === 'english' ? 'WPM' : '字／分';
+    const speed = (value: number) => `${value.toFixed(1)} ${unit}`;
+    const errors = (value: number) => `${(value * 100).toFixed(1)}%`;
+    return `<tr><th scope="row">${language === 'english' ? '英文' : '繁中'}</th>
+      <td>${speed(a.speed)}</td><td>${speed(b.speed)}</td>
+      <td>${errors(a.rate)}</td><td>${errors(b.rate)}</td></tr>`;
+  }).join('');
+  return `<section class="panel result-panel"><div class="section-head"><h2>最近一次比較的文字表現</h2><span>${completed.length} / 3 對</span></div>
+    <div class="table-scroll"><table><thead><tr><th>語言</th><th>A 速度</th><th>B 速度</th><th>A 錯字率</th><th>B 錯字率</th></tr></thead>
+      <tbody>${rows}</tbody></table></div></section>`;
 }
 
 function showKeyDetail(stage: HTMLElement, results: Record<string, Recommendation>, counts: ReturnType<typeof totalKeys>) {
