@@ -4,7 +4,7 @@ import { mountRound } from './round.ts';
 import { mountTravel } from './travel-panel.ts';
 import {
   comparisonPrompt, completePairs, configSchema, countRtErrors, defaultConfig, mergedRecommendations,
-  mm, newStudy, onGrid, passesTextGuard, proposeTargets, refinementForKey, restoreStudy, settingFor,
+  mm, newStudy, onGrid, passesTextGuard, proposeTargets, recordTravelTarget, refinementForKey, restoreStudy, settingFor,
   storageKey, summarizeText, totalKeys, trialResults, validationPrompt,
 } from './study.ts';
 import type { Condition, Config, Recommendation, Round, Setting, Study, Target } from './study.ts';
@@ -288,7 +288,12 @@ function renderBaseline(stage: HTMLElement) {
       .sort((a, b) => b.errors - a.errors)
       .slice(0, 6)
       .map(item => item.code);
-    closeTravel = mountTravel(travel, priorities);
+    closeTravel = mountTravel(travel, priorities, study.config, (code, distance) => {
+      if (!study || !recordTravelTarget(study, code, distance)) return false;
+      selection = null;
+      save();
+      return true;
+    });
   }
   stage.querySelector('[data-start]')?.addEventListener('click', () => {
     const details = stage.querySelector<HTMLDetailsElement>('.travel-panel');
@@ -318,7 +323,7 @@ function renderComparison(stage: HTMLElement) {
     });
     return;
   }
-  selection ??= trial ? [] : proposeTargets(study);
+  selection ??= proposeTargets(study).filter(target => !trial || target.source === 'travel');
   const counts = totalKeys(study.baseline);
   stage.innerHTML = `<div class="split">
     <section class="panel"><div class="section-head"><h2>候選設定</h2><span>${selection.length} / 6 鍵</span></div>

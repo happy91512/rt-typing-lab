@@ -5,7 +5,7 @@ async function openTravelPanel(page: Page) {
   await page.goto('/');
   await page.getByRole('button', { name: '開始基準測試' }).click();
   const panel = page.locator('.travel-panel');
-  await panel.locator('summary').click();
+  await panel.locator(':scope > summary').click();
   return panel;
 }
 
@@ -35,7 +35,7 @@ test('a failed WebHID request and a dismissed retry leave baseline typing usable
   await connect.click();
   await expect(connect).toBeDisabled();
   await expect(disconnect).toBeEnabled();
-  await panel.locator('summary').click();
+  await panel.locator(':scope > summary').click();
   await expect(panel).toHaveJSProperty('open', false);
   await expect(connect).toBeEnabled();
   await expect(disconnect).toBeDisabled();
@@ -138,7 +138,7 @@ test('reads live travel and waits for the device to stop when the panel closes',
     requestedPosition: 70, stopRequested: false, stopAcknowledged: false, closed: false,
   });
 
-  await panel.locator('summary').click();
+  await panel.locator(':scope > summary').click();
   await expect(panel).toHaveJSProperty('open', false);
   await expect.poll(deviceState).toEqual({
     requestedPosition: 70, stopRequested: true, stopAcknowledged: false, closed: false,
@@ -150,4 +150,93 @@ test('reads live travel and waits for the device to stop when the panel closes',
     requestedPosition: 70, stopRequested: true, stopAcknowledged: true, closed: true,
   });
   expect(await page.evaluate(() => Object.entries(localStorage))).toEqual(storageBefore);
+});
+
+test('adds an aligned replay improvement as a pending candidate without saving travel samples', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
+  await page.clock.pauseAt(new Date('2026-01-01T00:00:01Z'));
+  await page.addInitScript(() => {
+    class SimulatedKeyboard extends EventTarget {
+      opened = false;
+      readonly vendorId = 0x372e;
+      readonly productId = 0x103e;
+      readonly collections = [{ inputReports: [{ reportId: 9 }], outputReports: [{ reportId: 9 }] }];
+      private initial = true;
+
+      constructor() {
+        super();
+        window.addEventListener('test-travel-reading', event => {
+          const { raw, pressed } = (event as CustomEvent<{ raw: number; pressed: boolean }>).detail;
+          this.sample(raw, pressed);
+        });
+      }
+
+      async open() { this.opened = true; }
+      async close() { this.opened = false; }
+      async sendReport(_: number, bytes: Uint8Array) {
+        const [command, operation] = bytes;
+        if (command === 0x82) this.report([0x82, 1, 0, 1, 0, 6, 0x11, 0, 0, 0, 0, 5, 0]);
+        else if (operation !== 1) this.report([0x98, operation, 0, 1, 0, 0, 0, 0]);
+        else if (this.initial) {
+          this.initial = false;
+          this.sample(0, false);
+        }
+      }
+
+      private sample(raw: number, pressed: boolean) {
+        this.report([0x98, 1, 0, 1, 0, 6, 0, 29, raw >> 8, raw & 255, pressed ? 128 : 0, 0]);
+      }
+
+      private report(bytes: number[]) {
+        this.dispatchEvent(Object.assign(new Event('inputreport'), {
+          device: this, reportId: 9, data: new DataView(Uint8Array.from(bytes).buffer),
+        }));
+      }
+    }
+    const keyboard = new SimulatedKeyboard();
+    Object.defineProperty(navigator, 'hid', {
+      value: Object.assign(new EventTarget(), { requestDevice: async () => [keyboard] }),
+    });
+  });
+
+  const panel = await openTravelPanel(page);
+  await panel.getByRole('button', { name: '連線並量測' }).click();
+  await panel.getByText('用行程試算 RT 候選值').click();
+  await panel.getByLabel('首次觸發點').fill('1.00');
+  await panel.getByLabel('軸體總行程').fill('3.40');
+  await panel.getByLabel('頂部死區').fill('0.26');
+  await panel.getByLabel('底部死區').fill('0.25');
+  await panel.getByRole('button', { name: '準備試算短題' }).click();
+
+  const sample = async (depth: number, pressed: boolean) => {
+    await page.clock.runFor(15);
+    await page.evaluate(detail => window.dispatchEvent(new CustomEvent('test-travel-reading', { detail })),
+      { raw: depth * 10, pressed });
+  };
+  for (let attempt = 0; attempt < 6; attempt++) {
+    await panel.getByRole('button', { name: '開始這題' }).click();
+    await sample(100, true);
+    await page.keyboard.down('q');
+    await sample(140, true);
+    await sample(attempt % 2 === 0 ? 124 : 110, false);
+    await page.keyboard.up('q');
+    await sample(140, true);
+    await page.keyboard.down('q');
+    await sample(140, true);
+    await sample(0, false);
+    await page.keyboard.up('q');
+    await sample(0, false);
+    await panel.getByRole('button', { name: '完成這題' }).click();
+    await expect(panel.locator('[data-exercise-cadence]')).toContainText('上一題中位間隔 15.0 ms');
+  }
+  await expect(panel.locator('[data-exercise-note]')).toContainText('待驗證 0.17 mm');
+  await panel.getByRole('button', { name: '加入 A/B 候選' }).click();
+  await expect(panel.locator('[data-exercise-note]')).toContainText('已將 0.17 mm 加入待驗證');
+  const raw = await page.evaluate(() => localStorage.getItem('rt-typing-lab.study'));
+  expect(JSON.parse(raw ?? '')).toMatchObject({
+    baseline: [],
+    trials: [],
+    travelTargets: [{ code: 'KeyQ', distance: 17, source: 'travel' }],
+  });
+  expect(raw).not.toMatch(/rawTravel|receivedAt|samples|edges/);
 });

@@ -5,7 +5,7 @@ import type { Prompt } from './prompts.ts';
 import type { KeyCounts } from './scoring.ts';
 import {
   comparisonPrompt, completePairs, defaultConfig, mergedRecommendations, newStudy, passesTextGuard, proposeTargets,
-  refinementForKey, restoreStudy, trialResults, validationPrompt,
+  recordTravelTarget, refinementForKey, restoreStudy, trialResults, validationPrompt,
 } from './study.ts';
 import type { Condition, Round, Study, Trial } from './study.ts';
 
@@ -195,6 +195,23 @@ function makeStoredStudy(): Study {
 test('restores a study with generated prompt IDs at every stage', () => {
   const study = makeStoredStudy();
   assert.deepEqual(restoreStudy(JSON.stringify(study)), study);
+});
+
+test('resumes old studies and keeps travel estimates separate from measured recommendations', () => {
+  const { travelTargets: _, ...older } = newStudy(defaultConfig);
+  const study = restoreStudy(JSON.stringify(older))!;
+  assert.deepEqual(study.travelTargets, []);
+  assert.equal(recordTravelTarget(study, 'Escape', 17), false);
+  assert.equal(recordTravelTarget(study, targetCode, 15), false);
+  assert.equal(recordTravelTarget(study, targetCode, 17), true);
+  assert.equal(mergedRecommendations(study)[targetCode].status, 'pending');
+  assert.equal(proposeTargets(study)[0]?.source, 'travel');
+  assert.deepEqual(restoreStudy(JSON.stringify(study))?.travelTargets, study.travelTargets);
+
+  study.trials = [makeTrial()];
+  assert.equal(mergedRecommendations(study)[targetCode].target?.distance, 20);
+  assert.equal(recordTravelTarget(study, targetCode, 20), false);
+  assert.equal(proposeTargets(study)[0]?.distance, 17);
 });
 
 const stages: Record<string, (study: Study) => Round[]> = {

@@ -44,12 +44,13 @@ const round = z.object({
 });
 export type Round = z.infer<typeof round>;
 
-const target = z.object({ code: keyCode, distance, source: z.enum(['signals', 'manual', 'enable']) });
+const target = z.object({ code: keyCode, distance, source: z.enum(['signals', 'manual', 'enable', 'travel']) });
 export type Target = z.infer<typeof target>;
 const studySchema = z.object({
   version: z.literal(1),
   config: configSchema,
   baseline: z.array(round).max(5),
+  travelTargets: z.array(target).max(48).default([]),
   trials: z.array(z.object({
     targets: z.array(target).min(1).max(6),
     rounds: z.array(round).max(18),
@@ -63,7 +64,7 @@ export const pairs = 3;
 const order: Condition[] = ['A', 'B', 'B', 'A', 'A', 'B'];
 
 export function newStudy(config: Config): Study {
-  return { version: 1, config, baseline: [], trials: [], validation: [] };
+  return { version: 1, config, baseline: [], travelTargets: [], trials: [], validation: [] };
 }
 
 export function restoreStudy(raw: string): Study | null {
@@ -74,6 +75,8 @@ export function restoreStudy(raw: string): Study | null {
     const study = result.data;
     const baseline = getBaselinePrompts();
     if (!study.baseline.every((entry, i) => matchesPrompt(entry, baseline[i]))) return null;
+    if (new Set(study.travelTargets.map(item => item.code)).size !== study.travelTargets.length
+      || study.travelTargets.some(item => !validTravelTarget(study.config, item))) return null;
     if (study.trials.length && study.baseline.length !== baseline.length) return null;
     if (study.trials.some((trial, i) =>
       new Set(trial.targets.map(({ code }) => code)).size !== trial.targets.length
@@ -147,12 +150,29 @@ function emptyCounts(): KeyCounts {
   return { opportunities: 0, repeatOpportunities: 0, extra: 0, repeatMiss: 0, missed: 0, substituted: 0, transposed: 0 };
 }
 
+function validTravelTarget(config: Config, item: Target): boolean {
+  const original = settingFor(config, item.code);
+  return item.source === 'travel' && original.enabled && item.distance !== original.distance
+    && onGrid(item.distance, config.bounds);
+}
+
+export function recordTravelTarget(study: Study, code: string, value: number): boolean {
+  const target: Target = { code, distance: value, source: 'travel' };
+  if (!typeableCodes.includes(code) || !validTravelTarget(study.config, target)) return false;
+  if (study.trials.some(trial => trial.targets.some(item => item.code === code && item.distance === value))) return false;
+  study.travelTargets = [...study.travelTargets.filter(item => item.code !== code), target];
+  return true;
+}
+
 export function proposeTargets(study: Study): Target[] {
+  const fromTravel = study.travelTargets.filter(item => !study.trials.some(trial =>
+    trial.targets.some(target => target.code === item.code && target.distance === item.distance)));
+  const travelCodes = new Set(fromTravel.map(target => target.code));
   const counts = totalKeys(study.baseline);
   const { bounds } = study.config;
-  return typeableCodes.flatMap((code): Target[] => {
+  const fromTyping = typeableCodes.flatMap((code): Target[] => {
     const count = counts[code];
-    if (!count || count.opportunities < 12) return [];
+    if (!count || count.opportunities < 12 || travelCodes.has(code)) return [];
     const original = settingFor(study.config, code);
     if (!original.enabled) {
       return count.extra + count.repeatMiss + count.missed >= 2
@@ -167,7 +187,8 @@ export function proposeTargets(study: Study): Target[] {
   }).sort((a, b) =>
     (counts[b.code].extra + counts[b.code].repeatMiss + (b.source === 'enable' ? counts[b.code].missed : 0))
     - (counts[a.code].extra + counts[a.code].repeatMiss + (a.source === 'enable' ? counts[a.code].missed : 0))
-  ).slice(0, 6);
+  );
+  return [...fromTravel, ...fromTyping].slice(0, 6);
 }
 
 export type TextSummary = { errors: number; characters: number; rate: number; speed: number };
@@ -259,7 +280,8 @@ export function mergedRecommendations(study: Study): Record<string, Recommendati
     }
   }
   for (const target of proposeTargets(study)) {
-    result[target.code] ??= { target, a: emptyCounts(), b: emptyCounts(), status: 'pending', reason: '依基準表現提出，等待換值實測' };
+    result[target.code] ??= { target, a: emptyCounts(), b: emptyCounts(), status: 'pending',
+      reason: target.source === 'travel' ? '依行程試算提出，等待換值實測' : '依基準表現提出，等待換值實測' };
   }
   return result;
 }

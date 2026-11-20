@@ -4,6 +4,8 @@ import { summarizeTravel } from './travel-quality.ts';
 import type { DigitalEdge } from './travel-quality.ts';
 import { keyboardRows } from './prompts.ts';
 import { hero84TravelPositions } from './travel-positions.ts';
+import { mountTravelExercise } from './travel-exercise.ts';
+import type { Config } from './study.ts';
 
 const historySize = 48;
 const representative = ['KeyQ', 'Space', 'KeyA'];
@@ -16,10 +18,11 @@ function option(code: string) {
   return item;
 }
 
-export function mountTravel(host: HTMLElement, priorities: readonly string[]): () => void {
+export function mountTravel(host: HTMLElement, priorities: readonly string[], config: Config,
+  onCandidate: (code: string, distance: number) => boolean): () => void {
   host.innerHTML = `<details class="travel-panel">
     <summary>即時行程（實驗）</summary>
-    <p class="muted">先停下打字，再用有線 HERO84 HE 測一個鍵。行程顯示裝置原始讀值，候選 RT 仍需換值實測。</p>
+    <p class="muted">用有線 HERO84 HE 測一個鍵，可查看原始行程或做短題試算。候選 RT 仍需換值實測。</p>
     <label>測量鍵位<select name="travel-key"></select></label>
     <div class="actions"><button data-connect>連線並量測</button><button data-disconnect disabled>結束量測</button></div>
     <p class="form-note" data-travel-message role="status"></p>
@@ -29,6 +32,7 @@ export function mountTravel(host: HTMLElement, priorities: readonly string[]): (
       <p class="muted" data-reading>等待行程資料…</p>
       <p class="muted" data-quality></p>
       <p class="muted" data-quality-status role="status"></p>
+      <div data-travel-exercise></div>
     </div>
   </details>`;
   const details = host.querySelector<HTMLDetailsElement>('details')!;
@@ -58,7 +62,11 @@ export function mountTravel(host: HTMLElement, priorities: readonly string[]): (
   let device: TravelDevice | undefined;
   let request = 0;
   let busy = false;
+  let keyPressed = false;
   const lifecycle = new AbortController();
+  const exerciseHost = host.querySelector<HTMLElement>('[data-travel-exercise]')!;
+  const exercise = mountTravelExercise(exerciseHost, pad, () => key.value, config, onCandidate,
+    enabled => device?.requestCalibrationRate(enabled), lifecycle.signal);
 
   function showState() {
     connect.disabled = busy || !!device || !supported;
@@ -73,6 +81,8 @@ export function mountTravel(host: HTMLElement, priorities: readonly string[]): (
     history.length = 0;
     calibration.length = 0;
     edges.length = 0;
+    keyPressed = false;
+    exercise.reset();
     trace.hidden = true;
     reading.textContent = '等待行程資料…';
     evaluation.textContent = '';
@@ -98,6 +108,7 @@ export function mountTravel(host: HTMLElement, priorities: readonly string[]): (
     history.push(sample);
     if (history.length > historySize) history.shift();
     if (calibration.length < 4096 && edges.length < 80) calibration.push(sample);
+    exercise.sample(sample);
     const first = history[0];
     const mean = history.length > 1 ? (sample.receivedAt - first.receivedAt) / (history.length - 1) : 0;
     reading.textContent = `讀值 ${sample.rawTravel}，${sample.pressed ? '按下' : '放開'}${mean ? `，約 ${Math.round(mean)} ms／筆` : ''}`;
@@ -134,11 +145,15 @@ export function mountTravel(host: HTMLElement, priorities: readonly string[]): (
     pad.addEventListener(eventType, event => {
       if (!device || event.code !== key.value || event.repeat) return;
       event.preventDefault();
-      if (edges.length >= 80) return;
       const pressed = eventType === 'keydown';
-      if (pressed === (edges.at(-1)?.pressed ?? false)) return;
-      edges.push({ pressed, receivedAt: performance.now() });
-      showQuality();
+      if (pressed === keyPressed) return;
+      keyPressed = pressed;
+      const edge = { pressed, receivedAt: performance.now() };
+      exercise.edge(edge);
+      if (edges.length < 80) {
+        edges.push(edge);
+        showQuality();
+      }
     }, { signal: lifecycle.signal });
   }
 

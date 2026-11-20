@@ -7,6 +7,7 @@ const MODEL_UUID = 0x110000000005;
 const MODEL_COMMAND = 0x82;
 const TRAVEL_COMMAND = 0x98;
 const POLL_MS = 100;
+const CALIBRATION_POLL_MS = 20;
 const TIMEOUT_MS = 600;
 const NO_READING_TIMEOUT_MS = 8000;
 
@@ -51,6 +52,7 @@ export interface TravelDevice {
     onSample: (sample: TravelReading) => void,
     onError?: (error: Error) => void,
   ): Promise<() => Promise<void>>;
+  requestCalibrationRate(enabled: boolean): void;
   close(): Promise<void>;
 }
 
@@ -105,8 +107,9 @@ async function withTimeout<T>(work: Promise<T>): Promise<T> {
 }
 
 class Hero84TravelDevice implements TravelDevice {
-  private session: { stop(): Promise<void>; fail(reason: unknown): void } | undefined;
+  private session: { stop(): Promise<void>; fail(reason: unknown): void; repace(): void } | undefined;
   private closing: Promise<void> | undefined;
+  private calibrationRate = false;
   private readonly events = new AbortController();
   private readonly device: HidDevice;
 
@@ -122,6 +125,13 @@ class Hero84TravelDevice implements TravelDevice {
     }, { signal: this.events.signal });
   }
 
+  requestCalibrationRate(enabled: boolean): void {
+    const next = enabled && !!this.session && !this.closing;
+    if (this.calibrationRate === next) return;
+    this.calibrationRate = next;
+    this.session?.repace();
+  }
+
   async measure(code: string, onSample: (sample: TravelReading) => void, onError?: (error: Error) => void) {
     const position = hero84TravelPositions.get(code);
     if (position === undefined) throw new Error("這個鍵位尚未支援鍵程量測。");
@@ -132,6 +142,8 @@ class Hero84TravelDevice implements TravelDevice {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let lastReading = performance.now();
     let pendingQuery: Promise<void> | undefined;
+    let waitingForReading = false;
+    let repace = () => {};
     let stopping: Promise<void> | undefined;
     const fail = (reason: unknown) => {
       if (listeners.signal.aborted) return;
@@ -145,6 +157,7 @@ class Hero84TravelDevice implements TravelDevice {
       for (const sample of samples ?? []) {
         if (sample.position !== position || listeners.signal.aborted) continue;
         lastReading = receivedAt;
+        waitingForReading = false;
         try {
           onSample({ position, rawTravel: sample.travelRaw, pressed: sample.pressed, receivedAt });
         } catch (reason) {
@@ -157,6 +170,7 @@ class Hero84TravelDevice implements TravelDevice {
     const stop = () => {
       if (stopping) return stopping;
       listeners.abort();
+      this.calibrationRate = false;
       clearTimeout(timer);
       stopping = (async () => {
         try {
@@ -171,23 +185,36 @@ class Hero84TravelDevice implements TravelDevice {
       })();
       return stopping;
     };
-    this.session = { stop, fail };
+    this.session = { stop, fail, repace: () => repace() };
 
     try {
       await start;
       if (listeners.signal.aborted) throw new Error("鍵程量測已停止。");
       lastReading = performance.now();
+      const schedule = () => {
+        timer = setTimeout(poll, this.calibrationRate ? CALIBRATION_POLL_MS : POLL_MS);
+      };
       const poll = () => {
+        timer = undefined;
         if (listeners.signal.aborted) return;
         if (performance.now() - lastReading > NO_READING_TIMEOUT_MS) {
           fail(new Error("未收到所選鍵位的鍵程回報。"));
           return;
         }
+        if (this.calibrationRate && waitingForReading) {
+          // A fast query that received no reading leaves room for a slow retry.
+          this.calibrationRate = false;
+          schedule();
+          return;
+        }
+        waitingForReading = true;
         pendingQuery = withTimeout(this.device.sendReport(REPORT_ID, makeRequest(TRAVEL_COMMAND, 1, 2, position)));
-        void pendingQuery.then(
-          () => { if (!listeners.signal.aborted) timer = setTimeout(poll, POLL_MS); },
-          fail,
-        );
+        void pendingQuery.then(() => { if (!listeners.signal.aborted) schedule(); }, fail);
+      };
+      repace = () => {
+        if (timer === undefined || listeners.signal.aborted) return;
+        clearTimeout(timer);
+        schedule();
       };
       poll();
       return async () => {

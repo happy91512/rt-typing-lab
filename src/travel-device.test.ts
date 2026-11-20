@@ -8,6 +8,7 @@ class FixtureDevice extends EventTarget {
   readonly productId = 0x103e;
   readonly collections = [{ inputReports: [{ reportId: 9 }], outputReports: [{ reportId: 9 }] }];
   readonly sent: number[][] = [];
+  respondToQueries = true;
   private readonly model: number[];
 
   constructor(model = [0x11, 0, 0, 0, 0, 5]) {
@@ -26,7 +27,7 @@ class FixtureDevice extends EventTarget {
     const [command, operation] = bytes;
     if (command === 0x82) this.emitReport([0x82, 1, 0, 1, 0, 6, ...this.model, 0]);
     else if (operation === 1) {
-      this.emitReport([0x98, 1, 0, 1, 0, 12, 0, 29, 0, 7, 0x80, 0, 0, 70, 1, 3, 0x80, 0]);
+      if (this.respondToQueries) this.emitReport([0x98, 1, 0, 1, 0, 12, 0, 29, 0, 7, 0x80, 0, 0, 70, 1, 3, 0x80, 0]);
     } else {
       this.emitReport([0x98, operation, 0, 1, 0, 0, 0, 0]);
     }
@@ -88,6 +89,37 @@ test("closes a device with a different UUID without starting travel measurement"
   await assert.rejects(connectTravel(), /型號驗證失敗/);
   assert.deepEqual(device.sent, [[0x82, 1, 0, 1, 0, 6, 0, 0]]);
   assert.equal(device.opened, false);
+});
+
+test("paces short calibration at 20 ms and backs off when the key stops replying", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const device = new FixtureDevice();
+  installFixture(t, device);
+  const travel = await connectTravel();
+  const stop = await travel.measure("KeyQ", () => {});
+  const requests = () => device.sent.filter(([command, operation]) => command === 0x98 && operation === 1).length;
+  const advance = async (ms: number) => {
+    t.mock.timers.tick(ms);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  };
+  await advance(0);
+  assert.equal(requests(), 1);
+  travel.requestCalibrationRate(true);
+  await advance(19);
+  assert.equal(requests(), 1);
+  await advance(1);
+  assert.equal(requests(), 2);
+  device.respondToQueries = false;
+  await advance(20);
+  assert.equal(requests(), 3);
+  await advance(20);
+  assert.equal(requests(), 3);
+  await advance(99);
+  assert.equal(requests(), 3);
+  await advance(1);
+  assert.equal(requests(), 4);
+  await stop();
+  await travel.close();
 });
 
 test("reports disconnection and stops polling an unplugged device", async (t) => {
