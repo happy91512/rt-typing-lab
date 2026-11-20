@@ -5,7 +5,7 @@ import type { Prompt } from './prompts.ts';
 import type { KeyCounts } from './scoring.ts';
 import {
   comparisonPrompt, completePairs, defaultConfig, mergedRecommendations, newStudy, passesTextGuard, proposeTargets,
-  restoreStudy, trialResults, validationPrompt,
+  refinementForKey, restoreStudy, trialResults, validationPrompt,
 } from './study.ts';
 import type { Condition, Round, Study, Trial } from './study.ts';
 
@@ -139,6 +139,47 @@ test('preserves the best tested value after trying less effective settings', () 
   losing.targets[0].distance = 30;
   study.trials = [best, weaker, losing];
   assert.equal(mergedRecommendations(study)[targetCode].target?.distance, 20);
+});
+
+test('proposes one driver step toward the original when a winning value removed all errors', () => {
+  const study = newStudy(defaultConfig);
+  study.trials = [makeTrial()];
+  assert.equal(refinementForKey(study, targetCode)?.distance, 19);
+  assert.equal(refinementForKey(study, 'KeyF'), null);
+  const alreadyTried = makeTrial(() => counts({ opportunities: 10 }));
+  alreadyTried.targets[0].distance = 19;
+  study.trials.push(alreadyTried);
+  assert.equal(refinementForKey(study, targetCode), null);
+  assert.equal(mergedRecommendations(study)[targetCode].target?.distance, 20);
+});
+
+test('prefers the smaller adjustment when both recommendations have the same measured improvement', () => {
+  const study = newStudy(defaultConfig);
+  const closer = makeTrial();
+  closer.targets[0].distance = 19;
+  study.trials = [makeTrial(), closer];
+  assert.equal(mergedRecommendations(study)[targetCode].target?.distance, 19);
+});
+
+test('uses residual errors and driver increments to choose a follow-up', () => {
+  const study = newStudy({ ...defaultConfig, bounds: { min: 5, max: 25, step: 5 } });
+  study.trials = [makeTrial(condition => counts({ opportunities: 10, extra: condition === 'A' ? 2 : 1 }))];
+  assert.equal(refinementForKey(study, targetCode)?.distance, 25);
+  study.config.bounds.max = 20;
+  assert.equal(refinementForKey(study, targetCode), null);
+});
+
+test('waits for complete comparisons and keeps RT off in the original condition', () => {
+  const study = newStudy({ ...defaultConfig, standard: { ...defaultConfig.standard, enabled: false } });
+  const trial = makeTrial(condition => counts({ opportunities: 10, missed: condition === 'A' ? 2 : 1 }));
+  trial.targets[0].source = 'enable';
+  study.trials = [trial];
+  assert.equal(refinementForKey(study, targetCode), null);
+  trial.targets[0].source = 'signals';
+  study.config.standard.enabled = true;
+  study.trials = [makeTrial()];
+  study.trials.push({ ...makeTrial(), rounds: [] });
+  assert.equal(refinementForKey(study, targetCode), null);
 });
 
 function makeStoredStudy(): Study {

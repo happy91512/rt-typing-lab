@@ -4,8 +4,8 @@ import { mountRound } from './round.ts';
 import { mountTravel } from './travel-panel.ts';
 import {
   comparisonPrompt, completePairs, configSchema, countRtErrors, defaultConfig, mergedRecommendations,
-  mm, newStudy, onGrid, passesTextGuard, proposeTargets, restoreStudy, settingFor,
-  storageKey, summarizeText, totalKeys, validationPrompt,
+  mm, newStudy, onGrid, passesTextGuard, proposeTargets, refinementForKey, restoreStudy, settingFor,
+  storageKey, summarizeText, totalKeys, trialResults, validationPrompt,
 } from './study.ts';
 import type { Condition, Config, Recommendation, Round, Setting, Study, Target } from './study.ts';
 
@@ -545,15 +545,32 @@ function textComparison(completed: ReturnType<typeof completePairs>) {
 }
 
 function showKeyDetail(stage: HTMLElement, results: Record<string, Recommendation>, counts: ReturnType<typeof totalKeys>) {
+  if (!study) return;
   const stat = counts[selectedKey];
   const result = results[selectedKey];
+  const tested = study.trials.flatMap(trial => trial.targets.some(target => target.code === selectedKey)
+    ? [trialResults(trial)[selectedKey]] : []);
+  const next = refinementForKey(study, selectedKey);
   const host = stage.querySelector<HTMLElement>('#key-detail')!;
   host.innerHTML = `<div class="key-detail" aria-live="polite">
     <div><h3>${html(keyLabel(selectedKey))}</h3><span>${result?.reason ?? '已依基準回合整理按鍵表現'}</span></div>
     <dl><div><dt>按鍵機會</dt><dd>${stat?.opportunities ?? 0}</dd></div><div><dt>同鍵多打</dt><dd>${stat?.extra ?? 0}</dd></div>
     <div><dt>連打漏字</dt><dd>${stat?.repeatMiss ?? 0} / ${stat?.repeatOpportunities ?? 0}</dd></div>
     <div><dt>漏打總數</dt><dd>${stat?.missed ?? 0}</dd></div></dl>
-  </div>`;
+  </div>
+  ${tested.length ? `<details class="advanced restore-list">
+    <summary>${html(keyLabel(selectedKey))} 的比較紀錄（${tested.length}）</summary>
+    <div class="table-scroll"><table><thead><tr><th scope="col">B 候選值</th><th scope="col">A 錯誤 / 樣本</th><th scope="col">B 錯誤 / 樣本</th><th scope="col">結果</th></tr></thead><tbody>
+    ${tested.map(entry => `<tr><th scope="row">${entry.target ? mm(entry.target.distance) : '—'} mm</th>
+      <td>${rate(entry, 'a')}</td><td>${rate(entry, 'b')}</td><td>${statusLabels[entry.status]}</td></tr>`).join('')}
+    </tbody></table></div></details>` : ''}
+  ${next ? `<div class="actions"><button data-refine>比較 ${html(keyLabel(selectedKey))} 的相鄰值 ${mm(next.distance)} mm</button></div>
+    <p class="muted">這個相鄰值仍待驗證，目前的實測推薦繼續有效。</p>` : ''}`;
+  host.querySelector('[data-refine]')?.addEventListener('click', () => {
+    if (!next) return;
+    selection = [next, ...(selection ?? []).filter(target => target.code !== next.code)].slice(0, 6);
+    useView('comparison');
+  });
 }
 
 function exportCsv(study: Study, results: Record<string, Recommendation>) {

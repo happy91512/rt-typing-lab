@@ -182,5 +182,13 @@ test('complete a baseline and A/B pairs, verify the recommendation on new text, 
   expect(rows[0]).toContain('"實體鍵","欄位","原設定"');
   expect(rows.find(row => row.startsWith('"KeyF",'))).toContain('"0.15 mm","0.20","實測推薦"');
   for (const text of [...passages, ...holdoutPrompts]) expect(csv).not.toContain(text);
+
+  await page.getByText('F 的比較紀錄（1）').click();
+  await expect(page.locator('#key-detail').getByRole('rowheader', { name: '0.20 mm' })).toBeVisible();
+  await page.getByRole('button', { name: '比較 F 的相鄰值 0.19 mm' }).click();
+  await expect(page.getByLabel('候選值')).toHaveValue('0.19');
+  await expect(page.getByRole('rowheader', { name: 'F', exact: true }).locator('..')).toContainText('0.15 mm');
+  await expect(page.getByRole('rowheader', { name: 'F', exact: true }).locator('..')).toContainText('0.19 mm');
+  await expect(page.getByRole('button', { name: '開始三對比較' })).toBeEnabled();
   expect(externalRequests).toEqual([]);
 });

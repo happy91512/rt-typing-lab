@@ -252,7 +252,8 @@ export function mergedRecommendations(study: Study): Record<string, Recommendati
     for (const [code, entry] of Object.entries(trialResults(trial))) {
       const current = result[code];
       if (!current || (current.status !== 'recommended' && entry.status === 'keep')
-        || (entry.status === 'recommended' && (current.status !== 'recommended' || improvement(entry) > improvement(current)))) {
+        || (entry.status === 'recommended' && (current.status !== 'recommended'
+          || betterRecommendation(entry, current, settingFor(study.config, code))))) {
         result[code] = entry;
       }
     }
@@ -266,4 +267,32 @@ export function mergedRecommendations(study: Study): Record<string, Recommendati
 function improvement(result: Recommendation) {
   const source = result.target?.source;
   return countRtErrors(result.a, source) / result.a.opportunities - countRtErrors(result.b, source) / result.b.opportunities;
+}
+
+function betterRecommendation(candidate: Recommendation, current: Recommendation, original: Setting): boolean {
+  const difference = improvement(candidate) - improvement(current);
+  if (difference !== 0) return difference > 0;
+  if (!original.enabled || !candidate.target || !current.target) return false;
+  return Math.abs(candidate.target.distance - original.distance) < Math.abs(current.target.distance - original.distance);
+}
+
+export function refinementForKey(study: Study, code: string): Target | null {
+  if (study.trials.at(-1)?.rounds.length !== 18) return null;
+  const best = mergedRecommendations(study)[code];
+  if (best?.status !== 'recommended' || !best.target) return null;
+
+  const original = settingFor(study.config, code);
+  const { bounds } = study.config;
+  const { extra, repeatMiss, repeatOpportunities } = best.b;
+  const { distance, source } = best.target;
+  let direction: number;
+  if (extra >= 2 && repeatMiss === 0) direction = 1;
+  else if (repeatMiss >= 2 && extra === 0 && repeatOpportunities >= 24) direction = -1;
+  else if (original.enabled && countRtErrors(best.b, source) === 0) direction = Math.sign(original.distance - distance);
+  else return null;
+
+  const next = distance + direction * bounds.step;
+  if (!onGrid(next, bounds) || (original.enabled && next === original.distance)
+    || study.trials.some(trial => trial.targets.some(target => target.code === code && target.distance === next))) return null;
+  return { code, distance: next, source: original.enabled ? 'signals' : 'enable' };
 }
