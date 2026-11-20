@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { getBaselinePrompts, getPairPrompts, getValidationPrompts, typeableCodes } from './prompts.ts';
+import { getBaselinePrompts, getPairPrompts, getSupplementPrompt, getValidationPrompts, typeableCodes } from './prompts.ts';
 import type { Prompt } from './prompts.ts';
 import type { KeyCounts } from './scoring.ts';
 
@@ -50,6 +50,10 @@ const studySchema = z.object({
   version: z.literal(1),
   config: configSchema,
   baseline: z.array(round).max(5),
+  supplements: z.array(z.object({
+    targets: z.array(keyCode).min(1).max(6),
+    round: round.optional(),
+  })).max(48).default([]),
   travelTargets: z.array(target).max(48).default([]),
   trials: z.array(z.object({
     targets: z.array(target).min(1).max(6),
@@ -62,10 +66,11 @@ export type Study = z.infer<typeof studySchema>;
 export type Trial = Study['trials'][number];
 export const storageKey = 'rt-typing-lab.study';
 export const pairs = 3;
+export const minimumBaselineSamples = 12;
 const order: Condition[] = ['A', 'B', 'B', 'A', 'A', 'B'];
 
 export function newStudy(config: Config): Study {
-  return { version: 1, config, baseline: [], travelTargets: [], trials: [], validation: [] };
+  return { version: 1, config, baseline: [], supplements: [], travelTargets: [], trials: [], validation: [] };
 }
 
 export function restoreStudy(raw: string): Study | null {
@@ -78,7 +83,13 @@ export function restoreStudy(raw: string): Study | null {
     if (!study.baseline.every((entry, i) => matchesPrompt(entry, baseline[i]))) return null;
     if (new Set(study.travelTargets.map(item => item.code)).size !== study.travelTargets.length
       || study.travelTargets.some(item => !validTravelTarget(study.config, item))) return null;
-    if (study.trials.length && study.baseline.length !== baseline.length) return null;
+    if ((study.trials.length || study.supplements.length) && study.baseline.length !== baseline.length) return null;
+    if (study.supplements.some(({ targets, round }, index) =>
+      new Set(targets).size !== targets.length
+      || (round ? !matchesPrompt(round, getSupplementPrompt(index, targets)) : index !== study.supplements.length - 1)
+    )) return null;
+    if (pendingSupplement(study) && ((study.trials.at(-1)?.rounds.length ?? 18) < 18
+      || (study.validation.length > 0 && study.validation.length < 4))) return null;
     if (study.trials.some((trial, i) =>
       new Set(trial.targets.map(({ code }) => code)).size !== trial.targets.length
       || trial.targets.some(({ distance: value }) => !onGrid(value, study.config.bounds))
@@ -147,6 +158,52 @@ export function totalKeys(rounds: readonly Round[]): Record<string, KeyCounts> {
   return keys;
 }
 
+export function baselineKeyCounts(study: Study): Record<string, KeyCounts> {
+  const supplements = study.supplements.flatMap(({ targets, round }) => round
+    ? [{ ...round, keys: Object.fromEntries(Object.entries(round.keys).filter(([code]) => targets.includes(code))) }]
+    : []);
+  return totalKeys([...study.baseline, ...supplements]);
+}
+
+export function lowSampleKeys(counts: Record<string, KeyCounts>): string[] {
+  return typeableCodes.filter(code => (counts[code]?.opportunities ?? 0) < minimumBaselineSamples)
+    .sort((a, b) => (counts[a]?.opportunities ?? 0) - (counts[b]?.opportunities ?? 0));
+}
+
+export function pendingSupplement(study: Study) {
+  const next = study.supplements.at(-1);
+  if (!next || next.round) return null;
+  return { targets: next.targets, prompt: getSupplementPrompt(study.supplements.length - 1, next.targets) };
+}
+
+export function startSupplement(study: Study, preferred?: string): boolean {
+  if (study.baseline.length !== getBaselinePrompts().length || pendingSupplement(study)
+    || (study.trials.at(-1)?.rounds.length ?? 18) < 18 || (study.validation.length > 0 && study.validation.length < 4)
+    || study.supplements.length >= typeableCodes.length) return false;
+  const queue = lowSampleKeys(baselineKeyCounts(study));
+  if (preferred && queue.includes(preferred)) {
+    queue.splice(queue.indexOf(preferred), 1);
+    queue.unshift(preferred);
+  }
+  if (!queue.length) return false;
+  study.supplements.push({ targets: queue.slice(0, 6) });
+  return true;
+}
+
+export function finishSupplement(study: Study, round: Round): boolean {
+  const next = pendingSupplement(study);
+  const item = study.supplements.at(-1);
+  if (!item || !next || !matchesPrompt(round, next.prompt)) return false;
+  item.round = round;
+  return true;
+}
+
+export function cancelSupplement(study: Study): boolean {
+  if (!pendingSupplement(study)) return false;
+  study.supplements.pop();
+  return true;
+}
+
 function emptyCounts(): KeyCounts {
   return { opportunities: 0, repeatOpportunities: 0, extra: 0, repeatMiss: 0, missed: 0, substituted: 0, transposed: 0 };
 }
@@ -166,14 +223,15 @@ export function recordTravelTarget(study: Study, code: string, value: number): b
 }
 
 export function proposeTargets(study: Study): Target[] {
-  const fromTravel = study.travelTargets.filter(item => !study.trials.some(trial =>
-    trial.targets.some(target => target.code === item.code && target.distance === item.distance)));
+  const tried = (item: Target) => study.trials.some(trial =>
+    trial.targets.some(target => target.code === item.code && target.distance === item.distance));
+  const fromTravel = study.travelTargets.filter(item => !tried(item));
   const travelCodes = new Set(fromTravel.map(target => target.code));
-  const counts = totalKeys(study.baseline);
+  const counts = baselineKeyCounts(study);
   const { bounds } = study.config;
   const fromTyping = typeableCodes.flatMap((code): Target[] => {
     const count = counts[code];
-    if (!count || count.opportunities < 12 || travelCodes.has(code)) return [];
+    if (!count || count.opportunities < minimumBaselineSamples || travelCodes.has(code)) return [];
     const original = settingFor(study.config, code);
     if (!original.enabled) {
       return count.extra + count.repeatMiss + count.missed >= 2
@@ -185,7 +243,7 @@ export function proposeTargets(study: Study): Target[] {
     const delta = bounds.step * Math.max(1, Math.round(5 / bounds.step));
     const value = original.distance + (up ? delta : -delta);
     return onGrid(value, bounds) ? [{ code, distance: value, source: 'signals' }] : [];
-  }).sort((a, b) =>
+  }).filter(item => !tried(item)).sort((a, b) =>
     (counts[b.code].extra + counts[b.code].repeatMiss + (b.source === 'enable' ? counts[b.code].missed : 0))
     - (counts[a.code].extra + counts[a.code].repeatMiss + (a.source === 'enable' ? counts[a.code].missed : 0))
   );

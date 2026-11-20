@@ -4,8 +4,9 @@ import { getBaselinePrompts } from './prompts.ts';
 import type { Prompt } from './prompts.ts';
 import type { KeyCounts } from './scoring.ts';
 import {
-  comparisonPrompt, completePairs, defaultConfig, mergedRecommendations, newStudy, passesTextGuard, proposeTargets,
-  recordTravelTarget, refinementForKey, restoreStudy, trialResults, validationPrompt,
+  baselineKeyCounts, cancelSupplement, comparisonPrompt, completePairs, defaultConfig, finishSupplement, mergedRecommendations,
+  newStudy, passesTextGuard, pendingSupplement, proposeTargets, recordTravelTarget, refinementForKey, restoreStudy,
+  startSupplement, trialResults, validationPrompt,
 } from './study.ts';
 import type { Condition, Round, Study, Trial } from './study.ts';
 
@@ -195,6 +196,41 @@ function makeStoredStudy(): Study {
 test('restores a study with generated prompt IDs at every stage', () => {
   const study = makeStoredStudy();
   assert.deepEqual(restoreStudy(JSON.stringify(study)), study);
+});
+
+test('supplements low-sample keys using the original condition without adding separator counts', () => {
+  const study = newStudy(defaultConfig);
+  assert.equal(startSupplement(study), false);
+  study.baseline = getBaselinePrompts().map(prompt => makeRound(prompt, {
+    Space: counts({ opportunities: 4 }), Digit1: counts({ opportunities: 1 }),
+  }));
+  assert.equal(startSupplement(study, 'Digit1'), true);
+  const next = pendingSupplement(study)!;
+  assert.equal(next.targets[0], 'Digit1');
+  assert.equal(next.targets.length, 6);
+  assert.equal(startSupplement(study), false);
+  assert.deepEqual(pendingSupplement(restoreStudy(JSON.stringify(study))!), next);
+  assert.equal(finishSupplement(study, makeRound(getBaselinePrompts()[0])), false);
+  assert.equal(finishSupplement(study, makeRound(next.prompt, {
+    Digit1: counts({ opportunities: 19, extra: 2 }), Space: counts({ opportunities: 10, extra: 2 }),
+  })), true);
+  assert.equal(baselineKeyCounts(study).Digit1.opportunities, 24);
+  assert.equal(baselineKeyCounts(study).Space.opportunities, 20);
+  assert.equal(proposeTargets(study)[0].code, 'Digit1');
+  assert.deepEqual(restoreStudy(JSON.stringify(study)), study);
+  assert.equal(cancelSupplement(study), false);
+  assert.equal(startSupplement(study), true);
+  assert.equal(cancelSupplement(study), true);
+  assert.equal(study.supplements.length, 1);
+});
+
+test('waits for the current A/B comparison or holdout before planning more baseline samples', () => {
+  const study = makeStoredStudy();
+  study.validation.length = 1;
+  assert.equal(startSupplement(study), false);
+  study.validation = [];
+  study.trials[0].rounds.length = 12;
+  assert.equal(startSupplement(study), false);
 });
 
 test('resumes an old-format pair and a new-format holdout with their original texts', () => {

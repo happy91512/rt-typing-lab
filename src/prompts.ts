@@ -161,8 +161,21 @@ export function getBaselinePrompts(): Prompt[] {
 export function getPairPrompts(pairIndex: number, targetCodes: readonly string[], set: PromptSet = 'v1'): Prompt[] {
   const index = pairIndex % pairEnglish.length;
   const [english, chinese] = set === 'v2' ? comparisonText(pairIndex) : [pairEnglish[index], pairChinese[index]];
-  const singles = set === 'v2' ? variedTapRounds[(pairIndex * 37) % variedTapRounds.length] : singleTapRounds[index];
   const id = set === 'v2' ? `v2-pair-${pairIndex}` : `pair-${pairIndex}`;
+  return [
+    englishPrompt(`${id}-en`, english),
+    chinesePrompt(`${id}-zh`, chinese),
+    focusedDrill(`${id}-drill`, pairIndex, targetCodes, set),
+  ];
+}
+
+export function getSupplementPrompt(index: number, targetCodes: readonly string[]): Prompt {
+  return focusedDrill(`v2-supplement-${index}`, index + 110, targetCodes, 'v2');
+}
+
+function focusedDrill(id: string, pairIndex: number, targetCodes: readonly string[], set: PromptSet): Prompt {
+  const singles = set === 'v2' ? variedTapRounds[(pairIndex * 37) % variedTapRounds.length]
+    : singleTapRounds[pairIndex % singleTapRounds.length];
   const focus = [...new Set(targetCodes)].filter(code => physicalLegends.has(code));
   const offset = focus.length ? pairIndex % focus.length : 0;
   const rotated = [...focus.slice(offset), ...focus.slice(0, offset)];
@@ -178,11 +191,7 @@ export function getPairPrompts(pairIndex: number, targetCodes: readonly string[]
     });
   }).flat();
 
-  return [
-    englishPrompt(`${id}-en`, english),
-    chinesePrompt(`${id}-zh`, chinese),
-    drillPrompt(`${id}-drill`, codes),
-  ];
+  return drillPrompt(id, codes);
 }
 
 export function getValidationPrompts(pairIndex: number, set: PromptSet = 'v1'): Prompt[] {

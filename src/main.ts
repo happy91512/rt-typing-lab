@@ -3,9 +3,10 @@ import { bopomofoLabels, getBaselinePrompts, keyboardRows, typeableCodes } from 
 import { mountRound } from './round.ts';
 import { mountTravel } from './travel-panel.ts';
 import {
-  comparisonPrompt, completePairs, configSchema, countRtErrors, defaultConfig, mergedRecommendations,
-  mm, newStudy, onGrid, passesTextGuard, proposeTargets, recordTravelTarget, refinementForKey, restoreStudy, settingFor,
-  storageKey, summarizeText, totalKeys, trialResults, validationPrompt,
+  baselineKeyCounts, cancelSupplement, comparisonPrompt, completePairs, configSchema, countRtErrors, defaultConfig, finishSupplement,
+  lowSampleKeys, mergedRecommendations, minimumBaselineSamples, mm, newStudy, onGrid, passesTextGuard,
+  pendingSupplement, proposeTargets, recordTravelTarget, refinementForKey, restoreStudy, settingFor, startSupplement,
+  storageKey, summarizeText, trialResults, validationPrompt,
 } from './study.ts';
 import type { Condition, Config, Recommendation, Round, Setting, Study, Target } from './study.ts';
 
@@ -23,7 +24,7 @@ type View = keyof typeof steps;
 
 let storageNote = '';
 let study = loadStudy();
-let view: View = !study ? 'setup' : study.baseline.length < 5 ? 'baseline'
+let view: View = !study ? 'setup' : study.baseline.length < 5 || pendingSupplement(study) ? 'baseline'
   : study.trials.at(-1)?.rounds.length === 18 ? 'results' : 'comparison';
 let draft = study?.config ?? defaultConfig;
 let overrides = { ...draft.overrides };
@@ -68,7 +69,7 @@ function settingLabel(value: Setting) {
 }
 
 function useView(next: View) {
-  view = next;
+  view = next === 'comparison' && study && pendingSupplement(study) ? 'baseline' : next;
   render();
   app.querySelector<HTMLElement>('main h1')?.focus();
 }
@@ -99,7 +100,8 @@ function render() {
   closeTravel?.();
   closeTravel = undefined;
   const canVisit = (name: View) => name === 'setup' || (name === 'baseline' && study)
-    || (name === 'comparison' && study?.baseline.length === 5) || (name === 'results' && study?.baseline.length);
+    || (name === 'comparison' && study?.baseline.length === 5 && !pendingSupplement(study))
+    || (name === 'results' && study?.baseline.length);
   app.innerHTML = `
     <header class="topbar">
       <div class="wrap topbar-inner">
@@ -263,26 +265,45 @@ function renderBaseline(stage: HTMLElement) {
   if (!study) return;
   const { baseline } = study;
   const prompts = getBaselinePrompts();
-  const current = prompts[baseline.length];
+  const missing = lowSampleKeys(baselineKeyCounts(study));
+  const supplement = pendingSupplement(study);
+  const token = `supplement-${study.supplements.length}`;
+  const awaitingOriginal = !!supplement && confirmedBlock !== token;
+  const current = !awaitingOriginal ? supplement?.prompt ?? prompts[baseline.length] : undefined;
+  const canSupplement = !validating && (study.trials.at(-1)?.rounds.length ?? 18) === 18;
+  const altered = supplement ? new Set(study.trials.flatMap(trial => trial.targets.map(target => target.code))) : null;
   stage.innerHTML = `<div class="split test-layout">
     <section class="panel">
-      <div class="section-head"><h2>基準回合</h2><span>${baseline.length} / ${prompts.length}</span></div>
+      <div class="section-head"><h2>${supplement ? '低樣本鍵補測' : '基準回合'}</h2><span>${baseline.length} / ${prompts.length}</span></div>
       <progress aria-label="已完成的基準題數" value="${baseline.length}" max="${prompts.length}"></progress>
-      <div id="round">${current ? '' : '<p>基準測試已完成。你可以查看逐鍵結果，或挑選幾個鍵比較候選值。</p><div class="actions"><button class="primary" data-next>挑選比較鍵</button><button data-results>查看逐鍵結果</button></div>'}</div>
+      ${supplement ? `<p class="muted">這次補測 ${supplement.targets.map(code => html(keyLabel(code))).join('、')}。</p>` : ''}
+      <div id="round">${current ? '' : awaitingOriginal ? `<p>請切回板載設定 ${study.config.slotA} 並確認是 A 原設定，再開始補測。</p>
+        <div class="actions"><button class="primary" data-confirm-original>已回到 A 原設定</button></div>`
+        : `<p>已有 ${typeableCodes.length - missing.length}／${typeableCodes.length} 鍵達到基準樣本門檻。可補測低頻鍵，或直接比較候選值。</p>
+          <div class="actions"><button class="primary" data-next>挑選比較鍵</button>
+          ${canSupplement && missing.length ? '<button data-supplement>補測低樣本鍵</button>' : ''}
+          <button data-results>查看逐鍵結果</button></div>`}</div>
+      ${supplement ? '<div class="actions"><button class="text-button" data-cancel-supplement>取消本次補測</button></div>' : ''}
     </section>
     <aside class="panel detail-panel"><h2>目前設定</h2><dl class="summary-list">
       <div><dt>RT 欄位</dt><dd>${fieldLabels[study.config.field]}</dd></div>
       <div><dt>全鍵預設</dt><dd>${settingLabel(study.config.standard)}</dd></div>
       <div><dt>原設定槽位</dt><dd>${study.config.slotA}</dd></div></dl>
+      ${altered?.size ? `<details class="advanced"><summary>核對先前調整過的鍵</summary>${settingsTable(study.config, [], 'A', altered)}</details>` : ''}
       <div id="travel-mount"></div>
     </aside></div>`;
   if (current) roundScope = mountRound(stage.querySelector<HTMLElement>('#round')!, current, result => {
-    study!.baseline.push(result);
+    if (supplement) {
+      if (!finishSupplement(study!, result)) return;
+      confirmedBlock = '';
+      selection = null;
+      view = 'results';
+    } else study!.baseline.push(result);
     completeRound();
   });
   const travel = stage.querySelector<HTMLElement>('#travel-mount');
   if (travel) {
-    const priorities = Object.entries(totalKeys(baseline))
+    const priorities = Object.entries(baselineKeyCounts(study))
       .map(([code, counts]) => ({ code, errors: countRtErrors(counts) }))
       .filter(item => item.errors > 0)
       .sort((a, b) => b.errors - a.errors)
@@ -301,6 +322,24 @@ function renderBaseline(stage: HTMLElement) {
   });
   stage.querySelector('[data-next]')?.addEventListener('click', () => useView('comparison'));
   stage.querySelector('[data-results]')?.addEventListener('click', () => useView('results'));
+  stage.querySelector('[data-supplement]')?.addEventListener('click', () => beginSupplement());
+  stage.querySelector('[data-confirm-original]')?.addEventListener('click', () => {
+    confirmedBlock = token;
+    render();
+    app.querySelector<HTMLElement>('[data-start]')?.focus();
+  });
+  stage.querySelector('[data-cancel-supplement]')?.addEventListener('click', () => {
+    if (!study || !cancelSupplement(study)) return;
+    confirmedBlock = '';
+    completeRound();
+  });
+}
+
+function beginSupplement(code?: string) {
+  if (!study || validating || !startSupplement(study, code)) return;
+  confirmedBlock = '';
+  save();
+  useView('baseline');
 }
 
 function completeRound() {
@@ -323,8 +362,8 @@ function renderComparison(stage: HTMLElement) {
     });
     return;
   }
-  selection ??= proposeTargets(study).filter(target => !trial || target.source === 'travel');
-  const counts = totalKeys(study.baseline);
+  selection ??= proposeTargets(study);
+  const counts = baselineKeyCounts(study);
   stage.innerHTML = `<div class="split">
     <section class="panel"><div class="section-head"><h2>候選設定</h2><span>${selection.length} / 6 鍵</span></div>
       <p class="muted">先選少量鍵。其他鍵和本次未測的 RT 欄位保持原設定。</p>
@@ -462,7 +501,7 @@ function rate(result: Recommendation | undefined, condition: 'a' | 'b') {
 }
 
 function resultStatus(result: Recommendation | undefined, opportunities: number) {
-  return result ? statusLabels[result.status] : opportunities >= 12 ? '維持原設定' : '待補測';
+  return result ? statusLabels[result.status] : opportunities >= minimumBaselineSamples ? '維持原設定' : '待補測';
 }
 
 function renderResults(stage: HTMLElement) {
@@ -479,7 +518,9 @@ function renderResults(stage: HTMLElement) {
     return;
   }
   const { config, baseline, validation } = study;
-  const counts = totalKeys(baseline);
+  const counts = baselineKeyCounts(study);
+  const missing = lowSampleKeys(counts);
+  const supplement = pendingSupplement(study);
   const comparisonInProgress = (study.trials.at(-1)?.rounds.length ?? 18) < 18;
   const latestTrial = study.trials.at(-1);
   const completed = latestTrial ? completePairs(latestTrial) : [];
@@ -500,6 +541,7 @@ function renderResults(stage: HTMLElement) {
   ${completed.length ? textComparison(completed) : ''}
   <section class="panel result-panel"><div class="section-head"><h2>逐鍵設定表</h2><button data-export>下載 CSV</button></div>
     <p class="muted">A／B 欄顯示可歸因的 RT 錯誤數與按鍵機會。連打漏字樣本可在鍵位詳情查看。</p>
+    <p class="muted" data-baseline-coverage>已達基準樣本門檻 ${typeableCodes.length - missing.length}／${typeableCodes.length} 鍵。</p>
     ${validated ? `<p role="status">${validationOK ? '整組已通過新文本複測。' : '整組需複測。合併後的表現未通過中英文門檻。'}</p>` : ''}
     <div class="table-scroll result-table" tabindex="0" aria-label="逐鍵設定表，可捲動"><table>
       <thead><tr><th>鍵</th><th>原設定</th><th>建議</th><th>基準樣本</th><th>A 錯誤 / 樣本</th><th>B 錯誤 / 樣本</th><th>狀態</th></tr></thead>
@@ -511,8 +553,9 @@ function renderResults(stage: HTMLElement) {
         return `<tr><th scope="row">${html(keyLabel(code))}</th><td>${outside ? '—' : settingLabel(settingFor(config, code))}</td><td>${suggested}</td><td>${outside ? '—' : n}</td><td>${rate(result, 'a')}</td><td>${rate(result, 'b')}</td><td><span class="result-status ${result?.status ?? ''}">${outside ? '首版未測' : resultStatus(result, n)}</span></td></tr>`;
       }).join('')}</tbody>
     </table></div>
-    <div class="actions"><button class="primary" data-continue>${study.baseline.length < 5 ? '繼續基準測試' : study.trials.at(-1) && study.trials.at(-1)!.rounds.length < 18 ? '繼續目前比較' : '測試另一組鍵'}</button>
-      ${wins.length && !validated && !comparisonInProgress ? '<button data-validate>用新文本複測整組</button>' : ''}<button class="text-button" data-clear>清除本機資料</button></div>
+    <div class="actions"><button class="primary" data-continue>${supplement ? '繼續低樣本鍵補測' : study.baseline.length < 5 ? '繼續基準測試' : comparisonInProgress ? '繼續目前比較' : '測試另一組鍵'}</button>
+      ${study.baseline.length === 5 && missing.length && !supplement && !comparisonInProgress ? '<button data-supplement>補測低樣本鍵</button>' : ''}
+      ${wins.length && !validated && !comparisonInProgress && !supplement ? '<button data-validate>用新文本複測整組</button>' : ''}<button class="text-button" data-clear>清除本機資料</button></div>
     ${tested.size ? `<details class="advanced restore-list"><summary>還原測試前的設定</summary>
       <p class="muted">回到官方驅動的板載設定 ${config.slotA}，依下表核對 ${fieldLabels[config.field]}。若使用不同槽位且原槽未改動，切回原槽即可。</p>
       ${settingsTable(config, [], 'A', tested)}
@@ -521,7 +564,8 @@ function renderResults(stage: HTMLElement) {
   bindKeys(stage, () => showKeyDetail(stage, results, counts));
   showKeyDetail(stage, results, counts);
   stage.querySelector('[data-export]')?.addEventListener('click', () => exportCsv(study!, results));
-  stage.querySelector('[data-continue]')?.addEventListener('click', () => useView(study!.baseline.length < 5 ? 'baseline' : 'comparison'));
+  stage.querySelector('[data-continue]')?.addEventListener('click', () => useView(study!.baseline.length < 5 || supplement ? 'baseline' : 'comparison'));
+  stage.querySelector('[data-supplement]')?.addEventListener('click', () => beginSupplement());
   stage.querySelector('[data-validate]')?.addEventListener('click', () => {
     validating = true;
     confirmedBlock = '';
@@ -549,13 +593,17 @@ function textComparison(completed: ReturnType<typeof completePairs>) {
       <tbody>${rows}</tbody></table></div></section>`;
 }
 
-function showKeyDetail(stage: HTMLElement, results: Record<string, Recommendation>, counts: ReturnType<typeof totalKeys>) {
+function showKeyDetail(stage: HTMLElement, results: Record<string, Recommendation>, counts: ReturnType<typeof baselineKeyCounts>) {
   if (!study) return;
   const stat = counts[selectedKey];
   const result = results[selectedKey];
   const tested = study.trials.flatMap(trial => trial.targets.some(target => target.code === selectedKey)
     ? [trialResults(trial)[selectedKey]] : []);
-  const next = refinementForKey(study, selectedKey);
+  const pending = pendingSupplement(study);
+  const next = pending ? null : refinementForKey(study, selectedKey);
+  const canSupplement = study.baseline.length === 5 && !pending
+    && (study.trials.at(-1)?.rounds.length ?? 18) === 18
+    && (stat?.opportunities ?? 0) < minimumBaselineSamples;
   const host = stage.querySelector<HTMLElement>('#key-detail')!;
   host.innerHTML = `<div class="key-detail" aria-live="polite">
     <div><h3>${html(keyLabel(selectedKey))}</h3><span>${result?.reason ?? '已依基準回合整理按鍵表現'}</span></div>
@@ -570,7 +618,9 @@ function showKeyDetail(stage: HTMLElement, results: Record<string, Recommendatio
       <td>${rate(entry, 'a')}</td><td>${rate(entry, 'b')}</td><td>${statusLabels[entry.status]}</td></tr>`).join('')}
     </tbody></table></div></details>` : ''}
   ${next ? `<div class="actions"><button data-refine>比較 ${html(keyLabel(selectedKey))} 的相鄰值 ${mm(next.distance)} mm</button></div>
-    <p class="muted">這個相鄰值仍待驗證，目前的實測推薦繼續有效。</p>` : ''}`;
+    <p class="muted">這個相鄰值仍待驗證，目前的實測推薦繼續有效。</p>` : ''}
+  ${canSupplement ? `<div class="actions"><button data-supplement-key>補測 ${html(keyLabel(selectedKey))} 的基準樣本</button></div>` : ''}`;
+  host.querySelector('[data-supplement-key]')?.addEventListener('click', () => beginSupplement(selectedKey));
   host.querySelector('[data-refine]')?.addEventListener('click', () => {
     if (!next) return;
     selection = [next, ...(selection ?? []).filter(target => target.code !== next.code)].slice(0, 6);
@@ -579,7 +629,7 @@ function showKeyDetail(stage: HTMLElement, results: Record<string, Recommendatio
 }
 
 function exportCsv(study: Study, results: Record<string, Recommendation>) {
-  const baseline = totalKeys(study.baseline);
+  const baseline = baselineKeyCounts(study);
   const fields = [['實體鍵', '欄位', '原設定', '候選或推薦值 mm', '狀態', '基準樣本', 'A 錯誤', 'A 樣本', 'B 錯誤', 'B 樣本', '依據']];
   for (const code of typeableCodes) {
     const result = results[code];

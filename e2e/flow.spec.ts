@@ -88,7 +88,20 @@ test('complete a baseline and A/B pairs, verify the recommendation on new text, 
     await completeRound(page, 'chinese'),
   ];
   await completeRound(page, 'drill');
-  await page.getByRole('button', { name: '挑選比較鍵' }).click();
+  await page.getByRole('button', { name: '查看逐鍵結果' }).click();
+  const coverage = page.locator('[data-baseline-coverage]');
+  const startCoverage = Number((await coverage.textContent())?.match(/(\d+)／48/)?.[1]);
+  expect(startCoverage).toBeLessThan(48);
+  await page.getByRole('button', { name: '補測低樣本鍵' }).click();
+  const targets = (await savedStudy(page)).study.supplements[0].targets;
+  expect(targets).toHaveLength(6);
+  await page.reload();
+  await expect(page.getByRole('heading', { name: '低樣本鍵補測' })).toBeVisible();
+  expect((await savedStudy(page)).study.supplements[0].targets).toEqual(targets);
+  await page.getByRole('button', { name: '已回到 A 原設定' }).click();
+  const supplement = await completeRound(page, 'drill');
+  await expect(coverage).toContainText(`${startCoverage + targets.length}／48`);
+  await page.getByRole('button', { name: '測試另一組鍵' }).click();
   const beginComparison = page.getByRole('button', { name: '開始三對比較' });
   await expect(beginComparison).toBeDisabled();
   await page.getByLabel('選擇鍵位').selectOption('KeyF');
@@ -154,6 +167,7 @@ test('complete a baseline and A/B pairs, verify the recommendation on new text, 
 
   const { study, raw } = await savedStudy(page);
   expect(study.baseline.map(({ kind }) => kind)).toEqual(['english', 'english', 'chinese', 'chinese', 'drill']);
+  expect(study.supplements[0].round?.promptId).toBe('v2-supplement-0');
   expect(study.trials).toHaveLength(1);
   expect(study.trials[0].targets).toEqual([{ code: 'KeyF', distance: 20, source: 'manual' }]);
   expect(study.trials[0].rounds.map(({ kind }) => kind)).toEqual(blocks.flatMap(() => ['english', 'chinese', 'drill']));
@@ -167,7 +181,7 @@ test('complete a baseline and A/B pairs, verify the recommendation on new text, 
     expect(round.text.errors).toBe(round.keys.KeyF?.extra ?? 0);
   }
   expect(JSON.parse(raw)).toEqual(study);
-  for (const text of [unfinishedText, ...passages, ...holdoutPrompts]) expect(raw).not.toContain(text);
+  for (const text of [unfinishedText, supplement, ...passages, ...holdoutPrompts]) expect(raw).not.toContain(text);
   expect(await page.evaluate(() => Object.keys(localStorage))).toEqual([storageKey]);
 
   const pendingDownload = page.waitForEvent('download');
