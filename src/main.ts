@@ -373,7 +373,7 @@ function renderComparison(stage: HTMLElement) {
       app.querySelector<HTMLElement>('#add-target select')?.focus();
     }));
   stage.querySelector('[data-begin]')?.addEventListener('click', () => {
-    study!.trials.push({ targets: selection!, rounds: [] });
+    study!.trials.push({ targets: selection!, rounds: [], promptSet: 'v2' });
     study!.validation = [];
     validating = false;
     selection = null;

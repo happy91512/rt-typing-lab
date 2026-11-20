@@ -1,4 +1,7 @@
+import { comparisonText, holdoutText } from './prompt-variety.ts';
+
 export type TestKind = 'english' | 'chinese' | 'drill';
+export type PromptSet = 'v1' | 'v2';
 
 export type Prompt =
   | { id: string; kind: 'chinese'; text: string; codes?: undefined }
@@ -111,6 +114,11 @@ const pairChinese = [
 ];
 
 const singleTapRounds = [[0, 4, 8], [1, 5, 9], [2, 6, 10], [0, 5, 10], [1, 4, 8], [2, 5, 9]];
+const variedTapRounds = Array.from({ length: 9 }, (_, first) =>
+  Array.from({ length: 9 - first }, (_, offset) => first + offset + 1).flatMap(second =>
+    Array.from({ length: 10 - second }, (_, offset) => [first, second, second + offset + 1]),
+  ),
+).flat();
 
 const validationEnglish = [
   'Rob took the wrong path and reached the pond instead of the shop. He checked the map, turned at the stone wall, and got there just as the owner put out the sign.',
@@ -150,14 +158,17 @@ export function getBaselinePrompts(): Prompt[] {
   ];
 }
 
-export function getPairPrompts(pairIndex: number, targetCodes: readonly string[]): Prompt[] {
+export function getPairPrompts(pairIndex: number, targetCodes: readonly string[], set: PromptSet = 'v1'): Prompt[] {
   const index = pairIndex % pairEnglish.length;
+  const [english, chinese] = set === 'v2' ? comparisonText(pairIndex) : [pairEnglish[index], pairChinese[index]];
+  const singles = set === 'v2' ? variedTapRounds[(pairIndex * 37) % variedTapRounds.length] : singleTapRounds[index];
+  const id = set === 'v2' ? `v2-pair-${pairIndex}` : `pair-${pairIndex}`;
   const focus = [...new Set(targetCodes)].filter(code => physicalLegends.has(code));
   const offset = focus.length ? pairIndex % focus.length : 0;
   const rotated = [...focus.slice(offset), ...focus.slice(0, offset)];
   const roundCount = 11;
   const codes = Array.from({ length: roundCount }, (_, round) => {
-    const isSingle = singleTapRounds[index].includes(round);
+    const isSingle = singles.includes(round);
     return rotated.flatMap(code => {
       const presses = isSingle ? [code] : [code, code];
       if (rotated.length === 1 && round < roundCount - 1) {
@@ -168,16 +179,18 @@ export function getPairPrompts(pairIndex: number, targetCodes: readonly string[]
   }).flat();
 
   return [
-    englishPrompt(`pair-${pairIndex}-en`, pairEnglish[index]),
-    chinesePrompt(`pair-${pairIndex}-zh`, pairChinese[index]),
-    drillPrompt(`pair-${pairIndex}-drill`, codes),
+    englishPrompt(`${id}-en`, english),
+    chinesePrompt(`${id}-zh`, chinese),
+    drillPrompt(`${id}-drill`, codes),
   ];
 }
 
-export function getValidationPrompts(pairIndex: number): Prompt[] {
+export function getValidationPrompts(pairIndex: number, set: PromptSet = 'v1'): Prompt[] {
   const index = pairIndex % validationEnglish.length;
+  const [english, chinese] = set === 'v2' ? holdoutText(pairIndex) : [validationEnglish[index], validationChinese[index]];
+  const id = set === 'v2' ? `v2-validation-${pairIndex}` : `validation-${pairIndex}`;
   return [
-    englishPrompt(`validation-${pairIndex}-en`, validationEnglish[index]),
-    chinesePrompt(`validation-${pairIndex}-zh`, validationChinese[index]),
+    englishPrompt(`${id}-en`, english),
+    chinesePrompt(`${id}-zh`, chinese),
   ];
 }

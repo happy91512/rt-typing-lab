@@ -54,6 +54,7 @@ const studySchema = z.object({
   trials: z.array(z.object({
     targets: z.array(target).min(1).max(6),
     rounds: z.array(round).max(18),
+    promptSet: z.literal('v2').optional(),
   })),
   validation: z.array(round).max(4),
 });
@@ -86,7 +87,7 @@ export function restoreStudy(raw: string): Study | null {
     )) return null;
     if (study.validation.length && (study.trials.at(-1)?.rounds.length !== 18
       || !Object.values(mergedRecommendations(study)).some(result => result.status === 'recommended'))) return null;
-    const validation = getValidationPrompts(study.trials.length);
+    const validation = getValidationPrompts(study.trials.length, study.trials.at(-1)?.promptSet);
     if (!study.validation.every((entry, i) => matchesPrompt(entry, validation[i % 2]))) return null;
     return study;
   } catch {
@@ -115,7 +116,7 @@ export function comparisonPrompt(trial: Trial, trialIndex: number, roundIndex = 
   const condition = order[block];
   if (!condition) return null;
   const pair = Math.floor(block / 2);
-  const prompts = getPairPrompts(trialIndex * pairs + pair, trial.targets.map(({ code }) => code));
+  const prompts = getPairPrompts(trialIndex * pairs + pair, trial.targets.map(({ code }) => code), trial.promptSet);
   return { prompt: prompts[roundIndex % 3], block, pair, condition };
 }
 
@@ -123,7 +124,7 @@ export function validationPrompt(study: Study): { prompt: Prompt; condition: Con
   const index = study.validation.length;
   if (index >= 4) return null;
   return {
-    prompt: getValidationPrompts(study.trials.length)[index % 2],
+    prompt: getValidationPrompts(study.trials.length, study.trials.at(-1)?.promptSet)[index % 2],
     condition: index < 2 ? 'A' : 'B',
     block: Math.floor(index / 2),
   };

@@ -197,6 +197,30 @@ test('restores a study with generated prompt IDs at every stage', () => {
   assert.deepEqual(restoreStudy(JSON.stringify(study)), study);
 });
 
+test('resumes an old-format pair and a new-format holdout with their original texts', () => {
+  const old = makeStoredStudy();
+  const origin = comparisonPrompt(old.trials[0], 0, 16)!.prompt;
+  old.trials[0].rounds.length = 16;
+  old.validation = [];
+  const resumed = restoreStudy(JSON.stringify(old))!;
+  assert.deepEqual(comparisonPrompt(resumed.trials[0], 0)?.prompt, origin);
+  assert.match(origin.id, /^pair-/);
+
+  const study = makeStoredStudy();
+  const trial: Trial = { ...makeTrial(), rounds: [], promptSet: 'v2' };
+  for (let next = comparisonPrompt(trial, 1); next; next = comparisonPrompt(trial, 1)) {
+    trial.rounds.push(makeRound(next.prompt));
+  }
+  study.trials.push(trial);
+  study.validation = [];
+  const holdout = validationPrompt(study)!.prompt;
+  assert.match(holdout.id, /^v2-validation-/);
+  study.validation.push(makeRound(holdout));
+  const restored = restoreStudy(JSON.stringify(study))!;
+  assert.deepEqual(restored, study);
+  assert.deepEqual(validationPrompt(restored)?.prompt, validationPrompt(study)?.prompt);
+});
+
 test('resumes old studies and keeps travel estimates separate from measured recommendations', () => {
   const { travelTargets: _, ...older } = newStudy(defaultConfig);
   const study = restoreStudy(JSON.stringify(older))!;

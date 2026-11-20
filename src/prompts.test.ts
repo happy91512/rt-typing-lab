@@ -103,3 +103,23 @@ test('a one-key drill uses a neutral separator for isolated taps', () => {
     deepEqual(runs.map(run => run.split(',').length), [2, 2, 1, 2, 2, 2, 1, 2, 2, 2, 1]);
   }
 });
+
+test('v2 keeps both passages and single-key patterns distinct across a long comparison series', () => {
+  const pairs = Array.from({ length: 100 }, (_, index) => getPairPrompts(index, ['KeyA'], 'v2'));
+  for (const column of [0, 1, 2]) {
+    equal(new Set(pairs.map(prompts => prompts[column].text)).size, 100);
+  }
+  deepEqual(pairs[70], getPairPrompts(70, ['KeyA'], 'v2'));
+  for (const prompts of pairs) {
+    const drill = prompts.find(prompt => prompt.kind === 'drill');
+    ok(drill);
+    equal(drill.codes.filter(code => code === 'KeyA').length, 19);
+    equal(drill.codes.filter((code, index) => code === 'KeyA' && drill.codes[index + 1] === 'KeyA').length, 8);
+  }
+  const validation = Array.from({ length: 100 }, (_, index) => getValidationPrompts(index, 'v2'));
+  for (const column of [0, 1]) {
+    equal(new Set(validation.map(prompts => prompts[column].text)).size, 100);
+    const pairTexts = new Set(pairs.map(prompts => prompts[column].text));
+    ok(validation.every(prompts => !pairTexts.has(prompts[column].text)));
+  }
+});
