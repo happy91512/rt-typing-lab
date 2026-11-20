@@ -64,7 +64,7 @@ test("checks model before querying only the selected position and exits measurem
   const device = new FixtureDevice();
   installFixture(t, device);
   const travel = await connectTravel();
-  await assert.rejects(travel.measure("KeyP", () => {}), /尚未支援/);
+  await assert.rejects(travel.measure("F1", () => {}), /尚未支援/);
   const received: { position: number; rawTravel: number; pressed: boolean }[] = [];
   const stop = await travel.measure("Space", ({ position, rawTravel, pressed, receivedAt }) => {
     assert.ok(Number.isFinite(receivedAt));
