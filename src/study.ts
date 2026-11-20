@@ -67,6 +67,7 @@ export type Trial = Study['trials'][number];
 export const storageKey = 'rt-typing-lab.study';
 export const pairs = 3;
 export const minimumBaselineSamples = 12;
+const roundsPerPair = 6;
 const order: Condition[] = ['A', 'B', 'B', 'A', 'A', 'B'];
 
 export function newStudy(config: Config): Study {
@@ -275,13 +276,30 @@ export function passesTextGuard(original: readonly Round[], candidate: readonly 
 
 export function completePairs(trial: Trial): Record<Condition, Round[]>[] {
   const comparisons: Record<Condition, Round[]>[] = [];
-  for (let i = 0; i + 5 < trial.rounds.length; i += 6) {
-    const first = trial.rounds.slice(i, i + 3);
-    const second = trial.rounds.slice(i + 3, i + 6);
+  for (let i = 0; i + roundsPerPair <= trial.rounds.length; i += roundsPerPair) {
+    const first = trial.rounds.slice(i, i + roundsPerPair / 2);
+    const second = trial.rounds.slice(i + roundsPerPair / 2, i + roundsPerPair);
     if (!first.every((round, j) => round.promptId === second[j].promptId && round.kind === second[j].kind)) break;
     comparisons.push(order[i / 3] === 'A' ? { A: first, B: second } : { A: second, B: first });
   }
   return comparisons;
+}
+
+export function latestPairToRepeat(study: Study) {
+  const last = study.trials.at(-1);
+  if (!last?.rounds.length || pendingSupplement(study) || (study.validation.length > 0 && study.validation.length < 4)) return null;
+  const pair = Math.floor((last.rounds.length - 1) / roundsPerPair);
+  const kept = pair * roundsPerPair;
+  return { pair, kept, removed: last.rounds.length - kept };
+}
+
+export function repeatLatestPair(study: Study): boolean {
+  const repeat = latestPairToRepeat(study);
+  const trial = study.trials.at(-1);
+  if (!repeat || !trial) return false;
+  trial.rounds.length = repeat.kept;
+  study.validation = [];
+  return true;
 }
 
 export type Recommendation = {

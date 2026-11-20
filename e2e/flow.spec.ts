@@ -215,5 +215,21 @@ test('complete a baseline and A/B pairs, verify the recommendation on new text, 
   await expect(page.getByRole('rowheader', { name: 'F', exact: true }).locator('..')).toContainText('0.15 mm');
   await expect(page.getByRole('rowheader', { name: 'F', exact: true }).locator('..')).toContainText('0.19 mm');
   await expect(page.getByRole('button', { name: '開始三對比較' })).toBeEnabled();
+
+  await page.getByRole('button', { name: '查看逐鍵結果' }).click();
+  const repeat = page.getByRole('button', { name: '重測第 3 對' });
+  await repeat.click();
+  await expect(page.getByRole('dialog')).toContainText('這一對已送出的 6 題');
+  await page.getByRole('button', { name: '取消', exact: true }).click();
+  expect((await savedStudy(page)).study.trials[0].rounds).toHaveLength(18);
+  await repeat.click();
+  await page.getByRole('button', { name: '確認重測' }).click();
+  await expect(page.getByRole('heading', { name: '第 3 對 / 3' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '已套用 A 組' })).toBeVisible();
+  const restarted = (await savedStudy(page)).study;
+  expect(restarted.trials[0].rounds).toEqual(study.trials[0].rounds.slice(0, 12));
+  expect(restarted.validation).toEqual([]);
+  await page.reload();
+  await expect(page.getByRole('button', { name: '已套用 A 組' })).toBeVisible();
   expect(externalRequests).toEqual([]);
 });

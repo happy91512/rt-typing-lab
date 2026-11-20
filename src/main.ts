@@ -6,8 +6,8 @@ import { formatSettingList, settingList, settingText, validationText } from './s
 import type { SettingList } from './setting-list.ts';
 import {
   baselineKeyCounts, cancelSupplement, comparisonPrompt, completePairs, configSchema, countRtErrors, defaultConfig, finishSupplement,
-  lowSampleKeys, mergedRecommendations, minimumBaselineSamples, mm, newStudy, onGrid,
-  pendingSupplement, proposeTargets, recordTravelTarget, refinementForKey, restoreStudy, settingFor, startSupplement,
+  latestPairToRepeat, lowSampleKeys, mergedRecommendations, minimumBaselineSamples, mm, newStudy, onGrid,
+  pendingSupplement, proposeTargets, recordTravelTarget, refinementForKey, repeatLatestPair, restoreStudy, settingFor, startSupplement,
   storageKey, summarizeText, trialResults, validationPrompt,
 } from './study.ts';
 import type { Condition, Config, Recommendation, Round, Setting, Study, Target } from './study.ts';
@@ -125,6 +125,9 @@ function render() {
     <footer class="wrap footer"><span>打字內容在此瀏覽器中分析。</span><a href="${driver}" target="_blank" rel="noopener noreferrer">AULA 官方驅動 ↗</a></footer>
     <dialog id="clear-dialog"><h2>清除測試資料？</h2><p>這會清除本機設定、回合與結果。</p>
       <form method="dialog" class="actions"><button value="cancel" autofocus>取消</button><button class="danger" value="clear">清除本機資料</button></form>
+    </dialog>
+    <dialog id="repeat-dialog" aria-labelledby="repeat-title"><h2 id="repeat-title"></h2><p data-repeat-description></p>
+      <form method="dialog" class="actions"><button value="cancel" autofocus>取消</button><button class="danger" value="repeat">確認重測</button></form>
     </dialog>`;
   const stage = app.querySelector<HTMLElement>('#stage')!;
   switch (view) {
@@ -449,6 +452,7 @@ function mountComparisonRound(
   const slot = setting === 'A' || config.slotB === 'same' ? config.slotA : config.slotB;
   const confirmed = confirmedBlock === token;
   const heading = current.pair === undefined ? '整組複測' : `第 ${current.pair + 1} 對 / 3`;
+  const repeat = current.pair === undefined || validating ? null : latestPairToRepeat(study!);
   const previousKeys = new Set(study!.trials.flatMap(trial => trial.targets.map(target => target.code)));
   const separateSlot = config.slotB !== 'same' && setting === 'B';
   if (separateSlot) for (const code of Object.keys(config.overrides)) previousKeys.add(code);
@@ -457,6 +461,7 @@ function mountComparisonRound(
     <div id="round">${confirmed ? '' : `<h3>套用 ${setting} 組設定</h3>
       <p>在官方驅動切到板載設定 ${slot}，依右側清單確認各鍵。操作完成後再回來開始這組。</p>
       <div class="actions"><button class="primary" data-confirm>已套用 ${setting} 組</button><a class="button-link" href="${driver}" target="_blank" rel="noopener noreferrer">開啟官方驅動 ↗</a></div>`}</div>
+    ${repeat ? `<div class="actions"><button class="text-button" data-repeat-pair>重測第 ${repeat.pair + 1} 對</button></div>` : ''}
     </section><aside class="panel detail-panel"><h2>${setting} 組設定清單</h2>
       <p class="muted">板載設定 ${slot} ／ ${fieldLabels[config.field]}</p>
       ${separateSlot ? `<p class="muted">先以 A 槽為基準建立 B 槽。未列出的鍵沿用全鍵預設 ${settingLabel(config.standard)}。</p>` : ''}
@@ -469,6 +474,7 @@ function mountComparisonRound(
     render();
     app.querySelector<HTMLElement>('[data-start]')?.focus();
   });
+  stage.querySelector('[data-repeat-pair]')?.addEventListener('click', repeatPairDialog);
 }
 
 function settingsTable(config: Config, targets: readonly Target[], condition: Condition, previouslyTested: Iterable<string> = []) {
@@ -494,6 +500,28 @@ function clearDialog() {
     save();
     useView('setup');
   }, { once: true });
+  dialog.showModal();
+}
+
+function repeatPairDialog() {
+  if (!study || validating) return;
+  const repeat = latestPairToRepeat(study);
+  if (!repeat) return;
+  const dialog = app.querySelector<HTMLDialogElement>('#repeat-dialog')!;
+  dialog.returnValue = '';
+  dialog.querySelector('#repeat-title')!.textContent = `重測第 ${repeat.pair + 1} 對？`;
+  dialog.querySelector('[data-repeat-description]')!.textContent =
+    `會清除這一對已送出的 ${repeat.removed} 題，從這一對的第一組重來。${study.validation.length ? '整組複測結果也需重新取得。' : ''}`;
+  dialog.onclose = () => {
+    if (dialog.open || dialog.returnValue !== 'repeat' || !study) return;
+    dialog.returnValue = '';
+    if (!repeatLatestPair(study)) return;
+    confirmedBlock = '';
+    selection = null;
+    validating = false;
+    save();
+    useView('comparison');
+  };
   dialog.showModal();
 }
 
@@ -527,6 +555,7 @@ function renderResults(stage: HTMLElement) {
   const comparisonInProgress = (study.trials.at(-1)?.rounds.length ?? 18) < 18;
   const latestTrial = study.trials.at(-1);
   const completed = latestTrial ? completePairs(latestTrial) : [];
+  const repeat = latestPairToRepeat(study);
   const english = summarizeText(baseline, 'english');
   const chinese = summarizeText(baseline, 'chinese');
   const validated = validation.length === 4;
@@ -559,7 +588,9 @@ function renderResults(stage: HTMLElement) {
     </table></div>
     <div class="actions"><button class="primary" data-continue>${supplement ? '繼續低樣本鍵補測' : study.baseline.length < 5 ? '繼續基準測試' : comparisonInProgress ? '繼續目前比較' : '測試另一組鍵'}</button>
       ${study.baseline.length === 5 && missing.length && !supplement && !comparisonInProgress ? '<button data-supplement>補測低樣本鍵</button>' : ''}
-      ${wins.length && !validated && !comparisonInProgress && !supplement ? '<button data-validate>用新文本複測整組</button>' : ''}<button class="text-button" data-clear>清除本機資料</button></div>
+      ${wins.length && !validated && !comparisonInProgress && !supplement ? '<button data-validate>用新文本複測整組</button>' : ''}
+      ${repeat ? `<button class="text-button" data-repeat-pair>重測第 ${repeat.pair + 1} 對</button>` : ''}
+      <button class="text-button" data-clear>清除本機資料</button></div>
     ${tested.size ? `<details class="advanced restore-list"><summary>還原測試前的設定</summary>
       <p class="muted">回到官方驅動的板載設定 ${config.slotA}，依下表核對 ${fieldLabels[config.field]}。若使用不同槽位且原槽未改動，切回原槽即可。</p>
       ${settingsTable(config, [], 'A', tested)}
@@ -582,6 +613,7 @@ function renderResults(stage: HTMLElement) {
     app.querySelector<HTMLElement>('[data-confirm]')?.focus();
   });
   stage.querySelector('[data-clear]')?.addEventListener('click', clearDialog);
+  stage.querySelector('[data-repeat-pair]')?.addEventListener('click', repeatPairDialog);
 }
 
 function settingListSection(list: SettingList, config: Config) {

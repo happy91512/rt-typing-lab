@@ -4,8 +4,9 @@ import { getBaselinePrompts } from './prompts.ts';
 import type { Prompt } from './prompts.ts';
 import type { KeyCounts } from './scoring.ts';
 import {
-  baselineKeyCounts, cancelSupplement, comparisonPrompt, completePairs, defaultConfig, finishSupplement, mergedRecommendations,
-  newStudy, passesTextGuard, pendingSupplement, proposeTargets, recordTravelTarget, refinementForKey, restoreStudy,
+  baselineKeyCounts, cancelSupplement, comparisonPrompt, completePairs, defaultConfig, finishSupplement, latestPairToRepeat,
+  mergedRecommendations, newStudy, passesTextGuard, pendingSupplement, proposeTargets, recordTravelTarget,
+  refinementForKey, repeatLatestPair, restoreStudy,
   startSupplement, trialResults, validationPrompt,
 } from './study.ts';
 import type { Condition, Round, Study, Trial } from './study.ts';
@@ -195,6 +196,33 @@ function makeStoredStudy(): Study {
 
 test('restores a study with generated prompt IDs at every stage', () => {
   const study = makeStoredStudy();
+  assert.deepEqual(restoreStudy(JSON.stringify(study)), study);
+});
+
+test('restarts only the most recent pair and invalidates the combined holdout', () => {
+  const study = makeStoredStudy();
+  const kept = study.trials[0].rounds.slice(0, 12);
+  assert.deepEqual(latestPairToRepeat(study), { pair: 2, kept: 12, removed: 6 });
+  assert.equal(repeatLatestPair(study), true);
+  assert.deepEqual(study.trials[0].rounds, kept);
+  assert.deepEqual(study.validation, []);
+  assert.equal(comparisonPrompt(study.trials[0], 0)?.condition, 'A');
+  assert.equal(mergedRecommendations(study)[targetCode].status, 'pending');
+  assert.deepEqual(restoreStudy(JSON.stringify(study)), study);
+});
+
+test('rewinds a partially completed reverse-order pair to B and leaves earlier trials intact', () => {
+  const study = makeStoredStudy();
+  const previous = study.trials[0];
+  const trial: Trial = { ...makeTrial(), rounds: [], promptSet: 'v2' };
+  for (let index = 0; index < 10; index++) trial.rounds.push(makeRound(comparisonPrompt(trial, 1)!.prompt));
+  study.trials.push(trial);
+  study.validation = [];
+  assert.deepEqual(latestPairToRepeat(study), { pair: 1, kept: 6, removed: 4 });
+  assert.equal(repeatLatestPair(study), true);
+  assert.equal(study.trials[0], previous);
+  assert.equal(study.trials[0].rounds.length, 18);
+  assert.equal(comparisonPrompt(trial, 1)?.condition, 'B');
   assert.deepEqual(restoreStudy(JSON.stringify(study)), study);
 });
 
