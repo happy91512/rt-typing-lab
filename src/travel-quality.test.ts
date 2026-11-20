@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { TravelReading } from './travel-device.ts';
-import { summarizeTravel } from './travel-quality.ts';
+import { summarizeCadence, summarizeTravel } from './travel-quality.ts';
 import type { DigitalEdge } from './travel-quality.ts';
 
 function readings(times: readonly number[], transitions: readonly DigitalEdge[]): TravelReading[] {
@@ -21,6 +21,15 @@ function spaced(count: number, step: number, start = 0): number[] {
 function alternating(times: readonly number[]): DigitalEdge[] {
   return times.map((receivedAt, index) => ({ pressed: index % 2 === 0, receivedAt }));
 }
+
+test('reports actual cadence without requiring key events and skips duplicated or invalid timestamps', () => {
+  assert.deepEqual(summarizeCadence(readings([0, 20, 20, -1, 40, 140, Number.NaN, 160], [])), {
+    samples: 5, medianIntervalMs: 20, maxIntervalMs: 100,
+  });
+  assert.deepEqual(summarizeCadence(readings([0], [])), {
+    samples: 1, medianIntervalMs: null, maxIntervalMs: null,
+  });
+});
 
 test('reports aligned only after ten edges with dense, matching telemetry', () => {
   const edges = alternating(spaced(10, 40, 100));

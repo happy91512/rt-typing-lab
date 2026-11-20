@@ -1,6 +1,6 @@
 import { connectTravel } from './travel-device.ts';
 import type { TravelDevice, TravelReading } from './travel-device.ts';
-import { summarizeTravel } from './travel-quality.ts';
+import { summarizeCadence, summarizeTravel } from './travel-quality.ts';
 import type { DigitalEdge } from './travel-quality.ts';
 import { keyboardRows } from './prompts.ts';
 import { hero84TravelPositions } from './travel-positions.ts';
@@ -8,6 +8,7 @@ import { mountTravelExercise } from './travel-exercise.ts';
 import type { Config } from './study.ts';
 
 const historySize = 48;
+const probeDurationMs = 4000;
 const representative = ['KeyQ', 'Space', 'KeyA'];
 const labels = new Map(keyboardRows.flat().map(key => [key.code, key.label]));
 
@@ -32,6 +33,8 @@ export function mountTravel(host: HTMLElement, priorities: readonly string[], co
       <p class="muted" data-reading>等待行程資料…</p>
       <p class="muted" data-quality></p>
       <p class="muted" data-quality-status role="status"></p>
+      <button type="button" data-cadence-test>測試取樣速度（4 秒）</button>
+      <p class="muted" data-cadence-result role="status"></p>
       <div data-travel-exercise></div>
     </div>
   </details>`;
@@ -55,6 +58,8 @@ export function mountTravel(host: HTMLElement, priorities: readonly string[], co
   const pad = host.querySelector<HTMLElement>('.calibration-pad')!;
   const evaluation = host.querySelector<HTMLElement>('[data-quality]')!;
   const qualityStatus = host.querySelector<HTMLElement>('[data-quality-status]')!;
+  const testCadence = host.querySelector<HTMLButtonElement>('[data-cadence-test]')!;
+  const cadenceResult = host.querySelector<HTMLElement>('[data-cadence-result]')!;
   const supported = 'hid' in navigator;
   const history: TravelReading[] = [];
   const calibration: TravelReading[] = [];
@@ -63,10 +68,18 @@ export function mountTravel(host: HTMLElement, priorities: readonly string[], co
   let request = 0;
   let busy = false;
   let keyPressed = false;
+  let fastExercise = false;
+  let probe: { samples: TravelReading[]; edges: DigitalEdge[]; timer: ReturnType<typeof setTimeout> } | undefined;
   const lifecycle = new AbortController();
   const exerciseHost = host.querySelector<HTMLElement>('[data-travel-exercise]')!;
   const exercise = mountTravelExercise(exerciseHost, pad, () => key.value, config, onCandidate,
-    enabled => device?.requestCalibrationRate(enabled), lifecycle.signal);
+    enabled => { fastExercise = enabled; updateSampling(); }, lifecycle.signal);
+
+  function updateSampling() {
+    device?.requestCalibrationRate(fastExercise || !!probe);
+    testCadence.disabled = !device || !!probe || fastExercise;
+    exerciseHost.inert = !!probe;
+  }
 
   function showState() {
     connect.disabled = busy || !!device || !supported;
@@ -78,6 +91,8 @@ export function mountTravel(host: HTMLElement, priorities: readonly string[], co
     request++;
     const old = device;
     device = undefined;
+    if (probe) clearTimeout(probe.timer);
+    probe = undefined;
     history.length = 0;
     calibration.length = 0;
     edges.length = 0;
@@ -87,6 +102,7 @@ export function mountTravel(host: HTMLElement, priorities: readonly string[], co
     reading.textContent = '等待行程資料…';
     evaluation.textContent = '';
     qualityStatus.textContent = '';
+    cadenceResult.textContent = '';
     canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
     const cleanupId = request;
     busy = !!old;
@@ -108,6 +124,7 @@ export function mountTravel(host: HTMLElement, priorities: readonly string[], co
     history.push(sample);
     if (history.length > historySize) history.shift();
     if (calibration.length < 4096 && edges.length < 80) calibration.push(sample);
+    if (probe && probe.samples.length < 256) probe.samples.push(sample);
     exercise.sample(sample);
     const first = history[0];
     const mean = history.length > 1 ? (sample.receivedAt - first.receivedAt) / (history.length - 1) : 0;
@@ -127,6 +144,28 @@ export function mountTravel(host: HTMLElement, priorities: readonly string[], co
     });
     ctx.stroke();
     if (edges.length) showQuality();
+  }
+
+  testCadence.addEventListener('click', () => {
+    if (!device || probe || fastExercise) return;
+    probe = { samples: [], edges: [], timer: setTimeout(finishProbe, probeDurationMs) };
+    updateSampling();
+    cadenceResult.textContent = '測試中，請連續按下並放開選定鍵。';
+    pad.focus();
+  }, { signal: lifecycle.signal });
+
+  function finishProbe() {
+    if (!probe) return;
+    const { samples, edges } = probe;
+    probe = undefined;
+    updateSampling();
+    const cadence = summarizeCadence(samples);
+    if (cadence.medianIntervalMs === null) {
+      cadenceResult.textContent = '取樣不足，請再測一次。';
+      return;
+    }
+    const { matchedEdges } = summarizeTravel(samples, edges);
+    cadenceResult.textContent = `中位間隔 ${cadence.medianIntervalMs.toFixed(1)} ms／筆，最長間隔 ${cadence.maxIntervalMs?.toFixed(1)} ms。收到 ${cadence.samples} 筆，對齊 ${matchedEdges}／${edges.length} 個事件。`;
   }
 
   function showQuality() {
@@ -150,6 +189,7 @@ export function mountTravel(host: HTMLElement, priorities: readonly string[], co
       keyPressed = pressed;
       const edge = { pressed, receivedAt: performance.now() };
       exercise.edge(edge);
+      if (probe && probe.edges.length < 80) probe.edges.push(edge);
       if (edges.length < 80) {
         edges.push(edge);
         showQuality();
@@ -174,6 +214,7 @@ export function mountTravel(host: HTMLElement, priorities: readonly string[], co
       if (id !== request) return;
       message.textContent = '量測中。試著慢按、快按，再快速連按兩下。';
       trace.hidden = false;
+      updateSampling();
       showQuality();
       pad.focus();
     } catch (error) {

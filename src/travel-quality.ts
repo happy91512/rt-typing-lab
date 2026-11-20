@@ -34,6 +34,21 @@ function countMatches(transitions: readonly DigitalEdge[], edges: readonly Digit
   return previous[transitions.length];
 }
 
+function intervalStats(intervals: number[]) {
+  intervals.sort((a, b) => a - b);
+  const count = intervals.length;
+  return {
+    medianIntervalMs: count ? (intervals[Math.floor((count - 1) / 2)] + intervals[Math.floor(count / 2)]) / 2 : null,
+    maxIntervalMs: intervals.at(-1) ?? null,
+  };
+}
+
+export function summarizeCadence(samples: readonly TravelReading[]) {
+  const readings = chronological(samples, false);
+  const intervals = readings.slice(1).map((sample, index) => sample.receivedAt - readings[index].receivedAt);
+  return { samples: readings.length, ...intervalStats(intervals) };
+}
+
 export function summarizeTravel(samples: readonly TravelReading[], edges: readonly DigitalEdge[]): {
   samples: number;
   medianIntervalMs: number | null;
@@ -60,14 +75,10 @@ export function summarizeTravel(samples: readonly TravelReading[], edges: readon
       transitions.push(reading);
     }
   }
-  intervals.sort((a, b) => a - b);
-  const middle = Math.floor(intervals.length / 2);
-  const medianIntervalMs = intervals.length === 0
-    ? null
-    : (intervals[Math.floor((intervals.length - 1) / 2)] + intervals[middle]) / 2;
+  const { medianIntervalMs, maxIntervalMs: largestGap } = intervalStats(intervals);
   const maxIntervalMs = start < end && readings.length > 0
     ? Math.max(
-      intervals.at(-1) ?? 0,
+      largestGap ?? 0,
       Math.min(end, readings[0].receivedAt) - start,
       end - Math.max(start, readings[readings.length - 1].receivedAt),
     )

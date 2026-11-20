@@ -66,6 +66,8 @@ test('without WebHID the travel panel leaves the typing controls available', asy
 });
 
 test('reads live travel and waits for the device to stop when the panel closes', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
+  await page.clock.pauseAt(new Date('2026-01-01T00:00:01Z'));
   await page.addInitScript(() => {
     const state = { requestedPosition: -1, stopRequested: false, stopAcknowledged: false, closed: false };
     class SimulatedKeyboard extends EventTarget {
@@ -137,6 +139,15 @@ test('reads live travel and waits for the device to stop when the panel closes',
   await expect.poll(deviceState).toEqual({
     requestedPosition: 70, stopRequested: false, stopAcknowledged: false, closed: false,
   });
+
+  const probe = panel.getByRole('button', { name: '測試取樣速度（4 秒）' });
+  await probe.click();
+  await expect(probe).toBeDisabled();
+  await expect(calibration).toBeFocused();
+  await page.clock.runFor(4000);
+  await expect(probe).toBeEnabled();
+  await expect(panel.locator('[data-cadence-result]')).toContainText('中位間隔 20.0 ms／筆');
+  expect(await page.evaluate(() => Object.entries(localStorage))).toEqual(storageBefore);
 
   await panel.locator(':scope > summary').click();
   await expect(panel).toHaveJSProperty('open', false);
